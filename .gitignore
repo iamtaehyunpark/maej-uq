@@ -8,12 +8,15 @@ venv/
 .pytest_cache/
 .DS_Store
 
-# Data + run outputs are never committed.
-data/
-
-runs/
-out/
+# Data and run outputs are never committed. Anchored to the repo root on
+# purpose: an unanchored `runs/` also matches src/masattr/runs/, which is a
+# package, not an output directory.
+/data/
+/runs/
+/out/
 *.pkl
 
-src/masattr/calib/frozen/*.json
-!src/masattr/calib/frozen/README.md
+# Frozen calibration maps are a run artifact — they depend on which judge
+# scored the corpus — so only the explainer is tracked.
+/src/masattr/calib/frozen/*.json
+!/src/masattr/calib/frozen/README.md
