@@ -28,14 +28,35 @@ for the gpt-4o baseline arm.
 
 ## Data
 
-Nothing is bundled. Put your Who&When copy under one root:
+Nothing is bundled. The release ships one parquet per subset:
 
 ```
-<root>/whowhen/Algorithm-Generated/*.json    # subset "alg"  (126 files)
-<root>/whowhen/Hand-Crafted/*.json           # subset "hc"   (58 files)
+<root>/who_and_when/Algorithm-Generated.parquet   # subset "alg", 126 rows
+<root>/who_and_when/Hand-Crafted.parquet          # subset "hc",   58 rows
 ```
 
-then `export MASATTR_DATA_ROOT=<root>` (or pass `--data-root`).
+then `export MASATTR_DATA_ROOT=<root>` (or pass `--data-root`). A directory of
+per-trajectory JSON is also accepted.
+
+Verified against the release: 126 / 58 files, **4092 steps**, 3 + 3
+`agent_step_mismatch` files, HC reaching 130 steps — every pre-registered count
+in Part C §1 holds.
+
+**One conflict the release forces.** Part C §1 asserts both "126 / 58 files" and
+"`mistake_step` within bounds / every step has content", but 5 released files
+violate the second: 3 HC files point past the end of their trajectory
+(step 51 of 28, 8 of 5, 24 of 19) and 2 AG files contain an empty-content step.
+Both asserts cannot hold. `--anomaly-policy` makes the choice explicit rather
+than silent:
+
+| policy | effect |
+|---|---|
+| `fail` (default) | refuses to load, naming the files — spec-literal |
+| `flag` | keeps them, flags them, dual-reports them; counts hold |
+| `drop` | excludes them; the 126/58 assert then fails |
+
+`fail` is the default because the resolution is a pre-registration decision, not
+a loader default.
 
 ## Running the manifest
 

@@ -1,9 +1,12 @@
 """Data location. No path is hard-coded anywhere else in the package.
 
-Expected layout under the data root::
+The release ships one parquet per subset; a directory of per-trajectory JSON is
+also accepted. Expected layout under the data root, in resolution order::
 
-    <root>/whowhen/Algorithm-Generated/*.json    # subset "alg"
-    <root>/whowhen/Hand-Crafted/*.json           # subset "hc"
+    <root>/who_and_when/Algorithm-Generated.parquet   # subset "alg", 126 rows
+    <root>/who_and_when/Hand-Crafted.parquet          # subset "hc",   58 rows
+    <root>/whowhen/Algorithm-Generated/*.json         # legacy per-file layout
+    <root>/whowhen/Hand-Crafted/*.json
 
 Resolve with ``--data-root``, or ``$MASATTR_DATA_ROOT``, or a JSON config
 mapping subset names to explicit paths.
@@ -19,14 +22,30 @@ from pathlib import Path
 ENV_ROOT = "MASATTR_DATA_ROOT"
 
 DEFAULT_RELATIVE = {
-    "alg": "whowhen/Algorithm-Generated",
-    "hc": "whowhen/Hand-Crafted",
+    "alg": "who_and_when/Algorithm-Generated.parquet",
+    "hc": "who_and_when/Hand-Crafted.parquet",
 }
 
-#: Alternate spellings seen in the wild; tried when the default is absent.
+#: Alternate locations and layouts, tried in order when the default is absent.
 ALTERNATES = {
-    "alg": ("Who&When/Algorithm-Generated", "Algorithm-Generated", "algorithm_generated"),
-    "hc": ("Who&When/Hand-Crafted", "Hand-Crafted", "hand_crafted"),
+    "alg": (
+        "who_and_when/Algorithm-Generated",
+        "whowhen/Algorithm-Generated.parquet",
+        "whowhen/Algorithm-Generated",
+        "Who&When/Algorithm-Generated.parquet",
+        "Who&When/Algorithm-Generated",
+        "Algorithm-Generated.parquet",
+        "Algorithm-Generated",
+    ),
+    "hc": (
+        "who_and_when/Hand-Crafted",
+        "whowhen/Hand-Crafted.parquet",
+        "whowhen/Hand-Crafted",
+        "Who&When/Hand-Crafted.parquet",
+        "Who&When/Hand-Crafted",
+        "Hand-Crafted.parquet",
+        "Hand-Crafted",
+    ),
 }
 
 

@@ -16,7 +16,19 @@ EXPECTED_TOTAL_STEPS = 4092
 
 _HISTORY_KEYS = ("history", "steps", "messages", "conversation", "trajectory")
 _QUERY_KEYS = ("question", "query", "task", "problem")
-_TRUTH_KEYS = ("ground_truth", "answer", "gt", "final_answer")
+#: ``groundtruth`` (no underscore) is the Hand-Crafted spelling in the released
+#: parquet; ``ground_truth`` is the Algorithm-Generated one. Both must be here or
+#: the with-GT setting silently reads an empty reference on half the corpus.
+_TRUTH_KEYS = ("ground_truth", "groundtruth", "answer", "gt", "final_answer")
+
+#: Column carrying the trajectory identity in the released parquet.
+_ID_KEYS = ("question_ID", "question_id", "id", "file_id")
+
+#: What to do with the five files that violate Part C §1's own asserts.
+#: ``fail`` — refuse to load (spec-literal; the corpus will not load at all).
+#: ``flag`` — load, flag, and let the run dual-report them.
+#: ``drop`` — exclude them, which also breaks the 126/58 count assert.
+ANOMALY_POLICIES = ("fail", "flag", "drop")
 
 
 class LoaderError(RecordError):
@@ -49,15 +61,44 @@ class LoadReport:
         }
 
 
-def json_files(root: Path) -> list[Path]:
-    if root.is_file():
-        return [root]
-    if not root.exists():
-        raise LoaderError(f"missing subset directory: {root}")
-    files = sorted(p for p in root.rglob("*.json") if not p.name.startswith("."))
-    if not files:
-        raise LoaderError(f"no .json trajectory files under {root}")
-    return files
+def rows(path: Path) -> list[tuple[str, dict]]:
+    """Yield ``(file_id, row)`` from either release format.
+
+    Who&When ships as one parquet per subset (126 / 58 rows), which is what the
+    loaders read in practice. A directory of per-trajectory JSON is also
+    accepted, because that is the shape the upstream repo's own examples use and
+    the shape the fixtures take.
+    """
+    if path.is_dir():
+        files = sorted(p for p in path.rglob("*.json") if not p.name.startswith("."))
+        if not files:
+            raise LoaderError(f"no .json trajectory files under {path}")
+        return [(p.stem, read_json(p)) for p in files]
+    if path.suffix == ".parquet":
+        return read_parquet(path)
+    if path.suffix == ".json":
+        return [(path.stem, read_json(path))]
+    raise LoaderError(f"missing or unrecognised subset source: {path}")
+
+
+def read_parquet(path: Path) -> list[tuple[str, dict]]:
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as e:  # pragma: no cover - env dependent
+        raise LoaderError(
+            "reading the released Who&When parquet needs pyarrow: pip install pyarrow"
+        ) from e
+    table = pq.read_table(path).to_pylist()
+    out = []
+    for i, row in enumerate(table):
+        ident = next((str(row[k]) for k in _ID_KEYS if row.get(k)), None)
+        if ident is None:
+            raise LoaderError(f"{path.name} row {i}: no id column (looked for {_ID_KEYS})")
+        out.append((ident, row))
+    ids = [i for i, _ in out]
+    if len(set(ids)) != len(ids):
+        raise LoaderError(f"{path.name}: duplicate question_ID values")
+    return out
 
 
 def read_json(path: Path) -> dict:
@@ -139,6 +180,10 @@ def cast_step(value: Any, where: str) -> int:
 def flag_mismatch(rec: Record, report: LoadReport) -> Record:
     """Set ``agent_step_mismatch`` where the annotated agent is not the agent of
     the annotated step, after orchestrator-name collapse."""
+    if not 0 <= rec.label_mistake_step < len(rec.steps):
+        # Already flagged out-of-range: there is no step to disagree with, and
+        # calling that an agent mismatch would double-count one annotation fault.
+        return rec
     annotated = collapse_orchestrator(rec.label_mistake_agent)
     actual = collapse_orchestrator(rec.steps[rec.label_mistake_step].agent)
     if annotated == actual:
@@ -149,6 +194,37 @@ def flag_mismatch(rec: Record, report: LoadReport) -> Record:
         f"{rec.label_mistake_step} is {rec.steps[rec.label_mistake_step].agent!r}"
     )
     return rec.with_flag(FLAG_AGENT_STEP_MISMATCH)
+
+
+def apply_anomaly_policy(rec: Record, policy: str, report: LoadReport) -> Record | None:
+    """Resolve a record's schema anomalies under the chosen policy.
+
+    Returns the validated record, or ``None`` when the policy is to drop it.
+    """
+    if policy not in ANOMALY_POLICIES:
+        raise LoaderError(f"unknown anomaly policy {policy!r}; known: {ANOMALY_POLICIES}")
+    anomalies = rec.anomalies()
+    if not anomalies:
+        return rec.validate()
+
+    detail = "; ".join(m for _, m in anomalies)
+    if policy == "fail":
+        raise LoaderError(
+            f"{rec.key}: {detail}.\n"
+            "Spec v2 Part C §1 asserts this cannot happen, but the release contains "
+            "5 such files (3 HC with mistake_step past the trajectory end, 2 AG with "
+            "an empty-content step), while the same section asserts 126/58 files. "
+            "Both cannot hold. Choose: --anomaly-policy flag (keep and dual-report) "
+            "or --anomaly-policy drop (exclude, which breaks the count assert)."
+        )
+    for flag, message in anomalies:
+        rec = rec.with_flag(flag)
+        report.bump(flag)
+        report.note(f"{rec.file_id}: {message}")
+    if policy == "drop":
+        report.bump("dropped")
+        return None
+    return rec.validate()
 
 
 def finish(records: list[Record], report: LoadReport) -> LoadReport:

@@ -117,3 +117,57 @@ def scores(records):
         for ts in score_corpus(recs, client):
             rows.extend(ts.scores)
     return by_file(rows)
+
+
+@pytest.fixture(scope="session")
+def parquet_root(tmp_path_factory) -> Path:
+    """The release format: one parquet per subset, with its own column spellings.
+
+    Mirrors the real release — `ground_truth` on AG, `groundtruth` on HC,
+    `question_ID` as identity — plus one out-of-range `mistake_step` and one
+    empty-content step, which the release also contains.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    root = tmp_path_factory.mktemp("masattr_parquet") / "who_and_when"
+    root.mkdir(parents=True)
+
+    alg = []
+    for i in range(4):
+        r = _alg_file(i)
+        hist = [dict(h) for h in r["history"]]
+        if i == 1:
+            hist[2] = {**hist[2], "content": "   "}  # empty-content anomaly
+        alg.append(
+            {
+                "is_correct": False,
+                "question": r["question"],
+                "question_ID": f"alg_{i}",
+                "ground_truth": r["ground_truth"],
+                "history": hist,
+                "mistake_agent": r["mistake_agent"],
+                "mistake_step": r["mistake_step"],
+                "mistake_reason": r["mistake_reason"],
+            }
+        )
+    pq.write_table(pa.Table.from_pylist(alg), root / "Algorithm-Generated.parquet")
+
+    hc = []
+    for i in range(3):
+        r = _hc_file(i)
+        hc.append(
+            {
+                "history": [{"content": h["content"], "role": h["role"]} for h in r["history"]],
+                "question": r["question"],
+                "groundtruth": r["ground_truth"],  # note: no underscore, as released
+                "is_corrected": False,
+                "mistake_agent": r["mistake_agent"],
+                "mistake_step": "99" if i == 1 else r["mistake_step"],  # out-of-range anomaly
+                "mistake_reason": r["mistake_reason"],
+                "question_ID": f"hc_{i}",
+                "mistake_type": None,
+            }
+        )
+    pq.write_table(pa.Table.from_pylist(hc), root / "Hand-Crafted.parquet")
+    return root.parent

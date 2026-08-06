@@ -21,10 +21,30 @@ TypeSource = Literal["parsed", "classified"]
 
 TYPE_NORMS: tuple[str, ...] = ("plan", "delegate", "execute", "final", "unknown")
 
-#: The only pre-registered flag: annotation names an agent that does not act at
-#: the annotated step (3 AG + 3 HC known files).
+#: Pre-registered: the annotation names an agent that does not act at the
+#: annotated step (3 AG + 3 HC known files, confirmed against the release).
 FLAG_AGENT_STEP_MISMATCH = "agent_step_mismatch"
-KNOWN_FLAGS: tuple[str, ...] = (FLAG_AGENT_STEP_MISMATCH,)
+
+#: Discovered in the release, not anticipated by spec v2 Part C §1, which asserts
+#: both "126/58 files" and "mistake_step within bounds / every step has content"
+#: — the data violates the second for 5 files, so the two asserts cannot both
+#: hold. These flags exist so the conflict is visible and dual-reportable rather
+#: than resolved silently by dropping files. See ANOMALY_POLICIES.
+FLAG_MISTAKE_STEP_OUT_OF_RANGE = "mistake_step_out_of_range"  # 3 HC files
+FLAG_EMPTY_STEP_CONTENT = "empty_step_content"  # 2 AG files
+
+KNOWN_FLAGS: tuple[str, ...] = (
+    FLAG_AGENT_STEP_MISMATCH,
+    FLAG_MISTAKE_STEP_OUT_OF_RANGE,
+    FLAG_EMPTY_STEP_CONTENT,
+)
+
+#: Flags that mark a *schema* violation rather than an annotation disagreement.
+#: A record carrying one is not a clean datapoint for step-level scoring.
+ANOMALY_FLAGS: tuple[str, ...] = (
+    FLAG_MISTAKE_STEP_OUT_OF_RANGE,
+    FLAG_EMPTY_STEP_CONTENT,
+)
 
 
 class RecordError(ValueError):
@@ -78,8 +98,37 @@ class Record:
             raise RecordError(f"{self.key}: unregistered flag {flag!r}")
         return self if flag in self.flags else replace(self, flags=self.flags + (flag,))
 
+    def anomalies(self) -> list[tuple[str, str]]:
+        """Schema violations this record carries, as ``(flag, message)``.
+
+        Separated from :meth:`validate` because the release contains five files
+        that violate spec v2 Part C §1 while also being required by its own
+        126/58 count assert. Surfacing them as flags lets the run decide, and
+        report, what happened to them.
+        """
+        out: list[tuple[str, str]] = []
+        empty = [s.idx for s in self.steps if not s.content.strip()]
+        if empty:
+            out.append(
+                (FLAG_EMPTY_STEP_CONTENT, f"steps {empty} have empty content")
+            )
+        if not 0 <= self.label_mistake_step < len(self.steps):
+            out.append(
+                (
+                    FLAG_MISTAKE_STEP_OUT_OF_RANGE,
+                    f"mistake_step {self.label_mistake_step} outside "
+                    f"0..{len(self.steps) - 1}",
+                )
+            )
+        return out
+
     def validate(self) -> "Record":
-        """Loader asserts of Part C §1. Every one is a hard failure."""
+        """Loader asserts of Part C §1.
+
+        Hard failure for anything malformed. An *anomaly* raises too, unless the
+        record already carries its flag — flagging is how a run says it saw the
+        problem and chose to keep the file.
+        """
         where = self.key
         if self.subset not in ("alg", "hc"):
             raise RecordError(f"{where}: bad subset {self.subset!r}")
@@ -88,25 +137,27 @@ class Record:
         for i, s in enumerate(self.steps):
             if s.idx != i:
                 raise RecordError(f"{where}: step idx {s.idx} at position {i}")
-            if not s.content.strip():
-                raise RecordError(f"{where}: step {i} has empty content")
             if not s.agent:
                 raise RecordError(f"{where}: step {i} has empty agent")
             if s.type_norm not in TYPE_NORMS:
                 raise RecordError(f"{where}: step {i} bad type_norm {s.type_norm!r}")
             if s.type_source not in ("parsed", "classified"):
                 raise RecordError(f"{where}: step {i} bad type_source {s.type_source!r}")
-        if not 0 <= self.label_mistake_step < len(self.steps):
-            raise RecordError(
-                f"{where}: mistake_step {self.label_mistake_step} outside "
-                f"0..{len(self.steps) - 1}"
-            )
         if not self.label_mistake_agent:
             raise RecordError(f"{where}: empty mistake_agent")
         for f in self.flags:
             if f not in KNOWN_FLAGS:
                 raise RecordError(f"{where}: unregistered flag {f!r}")
+        unflagged = [(f, m) for f, m in self.anomalies() if f not in self.flags]
+        if unflagged:
+            raise RecordError(
+                f"{where}: " + "; ".join(m for _, m in unflagged)
+            )
         return self
+
+    @property
+    def is_anomalous(self) -> bool:
+        return any(f in ANOMALY_FLAGS for f in self.flags)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -164,10 +215,14 @@ def stats(records: Sequence[Record]) -> dict[str, Any]:
             types[s.type_norm] += 1
             sources[s.type_source] += 1
             agents[s.agent] += 1
+    flags: Counter[str] = Counter()
+    for r in records:
+        flags.update(r.flags)
     return {
         "n_files": len(records),
         "n_steps": sum(r.n_steps for r in records),
-        "n_flagged": sum(1 for r in records if FLAG_AGENT_STEP_MISMATCH in r.flags),
+        "n_flagged": flags[FLAG_AGENT_STEP_MISMATCH],
+        "flags": dict(flags),
         "steps_max": max((r.n_steps for r in records), default=0),
         "type_norm": dict(types),
         "type_source": dict(sources),

@@ -15,23 +15,22 @@ from ._common import (
     LoadReport,
     _QUERY_KEYS,
     _TRUTH_KEYS,
+    apply_anomaly_policy,
     as_text,
     cast_step,
     finish,
     flag_mismatch,
     history,
-    json_files,
     pick,
-    read_json,
     require,
+    rows,
 )
 
 SUBSET = "alg"
 
 
-def load_file(path: Path, report: LoadReport) -> Record:
-    blob = read_json(path)
-    where = f"{SUBSET}/{path.stem}"
+def load_row(file_id: str, blob: dict, report: LoadReport, policy: str) -> Record | None:
+    where = f"{SUBSET}/{file_id}"
 
     steps = []
     for i, raw in enumerate(history(blob, where)):
@@ -57,20 +56,25 @@ def load_file(path: Path, report: LoadReport) -> Record:
 
     rec = Record(
         subset=SUBSET,
-        file_id=path.stem,
+        file_id=file_id,
         query=as_text(pick(blob, _QUERY_KEYS)),
         ground_truth=as_text(pick(blob, _TRUTH_KEYS)),
         steps=tuple(typed),
         label_mistake_agent=as_text(pick(blob, ("mistake_agent", "agent"))),
         label_mistake_step=cast_step(blob.get("mistake_step", blob.get("step")), where),
         label_mistake_reason=as_text(pick(blob, ("mistake_reason", "reason"))),
-        source_file=str(path),
-    ).validate()
-    return flag_mismatch(rec, report)
+        source_file=report.source,
+    )
+    rec = apply_anomaly_policy(rec, policy, report)
+    return None if rec is None else flag_mismatch(rec, report)
 
 
-def load(root: str | Path) -> tuple[list[Record], LoadReport]:
-    root = Path(root)
-    report = LoadReport(subset=SUBSET, source=str(root))
-    records = [load_file(p, report) for p in json_files(root)]
+def load(source: str | Path, *, anomaly_policy: str = "fail") -> tuple[list[Record], LoadReport]:
+    source = Path(source)
+    report = LoadReport(subset=SUBSET, source=str(source))
+    records = [
+        rec
+        for file_id, blob in rows(source)
+        if (rec := load_row(file_id, blob, report, anomaly_policy)) is not None
+    ]
     return records, finish(records, report)

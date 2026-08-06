@@ -116,8 +116,8 @@ def test_empty_step_content_hard_fails(tmp_path):
         load_alg(d)
 
 
-def test_missing_directory_hard_fails(tmp_path):
-    with pytest.raises(LoaderError, match="missing subset directory"):
+def test_missing_source_hard_fails(tmp_path):
+    with pytest.raises(LoaderError, match="missing or unrecognised subset source"):
         load_hc(tmp_path / "nope")
 
 
@@ -128,3 +128,73 @@ def test_expectations_fail_loudly_on_fixtures(records):
     assert any("126 files" in p for p in problems)
     with pytest.raises(AssertionError):
         check_expectations(records["hc"], "hc")
+
+
+# --- released parquet format ------------------------------------------------
+
+
+def test_loads_the_released_parquet(parquet_root):
+    alg, report = load_alg(
+        parquet_root / "who_and_when" / "Algorithm-Generated.parquet", anomaly_policy="flag"
+    )
+    assert len(alg) == 4
+    assert {r.file_id for r in alg} == {f"alg_{i}" for i in range(4)}  # from question_ID
+    assert alg[0].ground_truth == "France"
+    assert report.n_steps == 12
+
+
+def test_hc_groundtruth_column_has_no_underscore(parquet_root):
+    hc, _ = load_hc(
+        parquet_root / "who_and_when" / "Hand-Crafted.parquet", anomaly_policy="flag"
+    )
+    # The release spells it `groundtruth` on HC and `ground_truth` on AG; missing
+    # the alias would silently empty the reference for the with-GT setting.
+    assert all(r.ground_truth == "Lima" for r in hc)
+
+
+def test_anomaly_policy_fail_names_the_conflict(parquet_root):
+    with pytest.raises(LoaderError, match="Both cannot hold"):
+        load_hc(parquet_root / "who_and_when" / "Hand-Crafted.parquet")
+
+
+def test_anomaly_policy_flag_keeps_and_marks(parquet_root):
+    hc, report = load_hc(
+        parquet_root / "who_and_when" / "Hand-Crafted.parquet", anomaly_policy="flag"
+    )
+    assert len(hc) == 3  # count assert survives
+    bad = [r for r in hc if r.is_anomalous]
+    assert [r.file_id for r in bad] == ["hc_1"]
+    assert "mistake_step_out_of_range" in bad[0].flags
+    assert report.counters["mistake_step_out_of_range"] == 1
+
+
+def test_anomaly_policy_drop_breaks_the_count(parquet_root):
+    hc, report = load_hc(
+        parquet_root / "who_and_when" / "Hand-Crafted.parquet", anomaly_policy="drop"
+    )
+    assert len(hc) == 2  # which is exactly why `drop` is not the default
+    assert report.counters["dropped"] == 1
+
+
+def test_out_of_range_is_not_double_counted_as_agent_mismatch(parquet_root):
+    hc, _ = load_hc(
+        parquet_root / "who_and_when" / "Hand-Crafted.parquet", anomaly_policy="flag"
+    )
+    bad = next(r for r in hc if r.is_anomalous)
+    assert FLAG_AGENT_STEP_MISMATCH not in bad.flags
+
+
+def test_empty_content_flagged_on_alg(parquet_root):
+    alg, report = load_alg(
+        parquet_root / "who_and_when" / "Algorithm-Generated.parquet", anomaly_policy="flag"
+    )
+    assert report.counters["empty_step_content"] == 1
+    assert [r.file_id for r in alg if r.is_anomalous] == ["alg_1"]
+
+
+def test_paths_resolve_parquet_first(parquet_root):
+    from masattr.paths import resolve
+
+    p = resolve(root=parquet_root)
+    assert p.get("alg").name == "Algorithm-Generated.parquet"
+    assert p.get("hc").exists()

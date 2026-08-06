@@ -37,6 +37,14 @@ def add_common(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
     p.add_argument("--n-boot", type=int, default=2000)
     p.add_argument("--out-dir", default="runs/out")
     p.add_argument(
+        "--anomaly-policy",
+        default="fail",
+        choices=("fail", "flag", "drop"),
+        help="what to do with the 5 released files that violate Part C §1's own "
+        "asserts: fail (spec-literal, will not load), flag (keep + dual-report), "
+        "drop (exclude, breaks the 126/58 count assert)",
+    )
+    p.add_argument(
         "--no-verify-specs",
         action="store_true",
         help="skip the frozen-artifact hash check (use only while iterating on prompts)",
@@ -72,7 +80,9 @@ def load_records(args: argparse.Namespace) -> dict[str, list[Record]]:
             out[subset] = list(read_jsonl(cache))
             continue
         loader = load_alg if subset == "alg" else load_hc
-        records, _ = loader(resolved.get(subset))
+        records, _ = loader(
+            resolved.get(subset), anomaly_policy=getattr(args, "anomaly_policy", "fail")
+        )
         if cache:
             cache.parent.mkdir(parents=True, exist_ok=True)
             write_jsonl(records, cache)
