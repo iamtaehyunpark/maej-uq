@@ -1,33 +1,32 @@
-"""Calibration, aggregation, attribution, metrics."""
+"""Calibration, attribution rules, and scoring."""
 
 from __future__ import annotations
 
-import math
 import random
 
+import numpy as np
 import pytest
 
-from masuq.aggregate import aggregate_trajectory, length_normalized, noisy_or_uncertainty
-from masuq.attribution import METHODS, agent_first, argmin_step, changepoint, disagreement, first_crossing
-from masuq.calibration import CalibrationError, TypedCalibrator, choose_threshold
-from masuq.judge.harness import StepScore
-from masuq.metrics import (
-    auarc,
-    auroc,
-    bootstrap_ci,
-    reliability,
-    score_attribution,
-    substring_step_match,
+from masattr.attribute.rules import (
+    METHODS,
+    agent_first,
+    argmin,
+    changepoint,
+    disagreement,
+    first_crossing,
 )
+from masattr.calib.apply import held_aside, labelled_rows, step_labels
+from masattr.calib.fit import CalibrationError, FrozenCalibration, choose_threshold, fit
+from masattr.eval.ci import bootstrap_ci, reliability
+from masattr.eval.scorers import score_pairs, slices, substring_step
+from masattr.judge.score import StepScore
 
 
-def _score(idx, p, agent="A", t="execute", key="k"):
+def _score(idx, p, agent="A", t="execute", key="hc/f"):
+    subset, _, file_id = key.partition("/")
     return StepScore(
-        key=key,
-        dataset="whowhen",
-        subset="hc",
-        task_id="t",
-        run_id=0,
+        subset=subset,
+        file_id=file_id,
         step_idx=idx,
         agent=agent,
         type_norm=t,
@@ -36,208 +35,213 @@ def _score(idx, p, agent="A", t="execute", key="k"):
     )
 
 
-# --- metrics ---------------------------------------------------------------
-
-
-def test_auroc_perfect_and_inverted():
-    assert auroc([0.9, 0.8, 0.2, 0.1], [True, True, False, False]) == 1.0
-    assert auroc([0.1, 0.2, 0.8, 0.9], [True, True, False, False]) == 0.0
-
-
-def test_auroc_ties_are_half():
-    assert auroc([0.5, 0.5], [True, False]) == 0.5
-
-
-def test_auroc_single_class_is_nan():
-    assert math.isnan(auroc([0.1, 0.9], [True, True]))
-
-
-def test_auarc_rewards_rejecting_the_wrong_ones():
-    correct = [True, True, False, False]
-    good = auarc([0.0, 0.0, 1.0, 1.0], correct)  # uncertainty tracks failure
-    bad = auarc([1.0, 1.0, 0.0, 0.0], correct)
-    assert good > bad
+# --- intervals & reliability ------------------------------------------------
 
 
 def test_reliability_on_a_calibrated_source():
     rng = random.Random(0)
     probs = [rng.random() for _ in range(4000)]
     labels = [rng.random() < p for p in probs]
-    rel = reliability(probs, labels, n_bins=10)
+    rel = reliability(probs, labels)
     assert rel.ece < 0.05
     assert "ECE=" in rel.render()
 
 
 def test_bootstrap_ci_brackets_the_point():
-    units = [1] * 70 + [0] * 30
-    ci = bootstrap_ci(units, lambda u: sum(u) / len(u), n_boot=500, seed=1)
+    ci = bootstrap_ci([1] * 70 + [0] * 30, lambda u: sum(u) / len(u), n_boot=500, seed=1)
     assert ci.lo <= ci.point <= ci.hi
-    assert 0.6 < ci.point < 0.8
 
 
-# --- dual scorer -----------------------------------------------------------
+# --- scorers ----------------------------------------------------------------
 
 
 def test_substring_scorer_reproduces_the_published_artifact():
-    # "1" in "12" — the reason exact match is primary.
-    assert substring_step_match(1, 12)
+    assert substring_step(1, 12)  # "1" in "12" — why exact match is primary
 
 
 def test_dual_scorer_disagrees_where_expected():
     pairs = [(("WebSurfer", 1), ("WebSurfer", 12))]
-    exact = score_attribution(pairs, scorer="exact", n_boot=10)
-    sub = score_attribution(pairs, scorer="substring", n_boot=10)
-    assert exact.step_acc == 0.0 and sub.step_acc == 1.0
+    assert score_pairs(pairs, scorer="exact", n_boot=10).step_acc == 0.0
+    assert score_pairs(pairs, scorer="substring", n_boot=10).step_acc == 1.0
 
 
 def test_agent_match_collapses_orchestrator_naming():
     pairs = [(("Orchestrator (thought)", 0), ("MagenticOneOrchestrator", 0))]
-    assert score_attribution(pairs, scorer="exact", n_boot=10).agent_acc == 1.0
+    assert score_pairs(pairs, scorer="exact", n_boot=10).agent_acc == 1.0
 
 
-# --- calibration -----------------------------------------------------------
+def test_slices_drop_flagged_files(records):
+    alg = records["alg"]
+    s = slices(alg)
+    assert len(s["all"]) == 4
+    assert len(s["excl_flagged"]) == 3
 
 
-def _fit_data(n=2000, seed=0):
+def test_slices_add_held_aside_when_present(records):
+    alg = records["alg"]
+    s = slices(alg, held_aside={"alg/alg_0"})
+    assert "excl_held_aside" in s and "excl_both" in s
+    assert len(s["excl_held_aside"]) == 3
+
+
+# --- calibration ------------------------------------------------------------
+
+
+def _fit_data(n=2400, seed=0):
     rng = random.Random(seed)
-    p, t, y = [], [], []
+    ps, types, ys = [], [], []
     for i in range(n):
-        raw = rng.random()
-        type_norm = ["plan", "execute", "final"][i % 3]
-        # Judge is overconfident: true rate is raw**2.
-        p.append(raw)
-        t.append(type_norm)
-        y.append(rng.random() < raw**2)
-    return p, t, y
+        p = rng.random()
+        ps.append(p)
+        types.append(["plan", "execute", "final"][i % 3])
+        ys.append(rng.random() < p**2)
+    return np.asarray(ps), types, np.asarray(ys, dtype=bool)
 
 
 def test_percentile_calibration_reduces_ece():
-    p, t, y = _fit_data()
-    cal = TypedCalibrator(method="percentile").fit(p, t, y, fit_on="test")
-    before = reliability(p, y).ece
-    after = reliability(cal.transform(p, t), y).ece
+    ps, types, ys = _fit_data()
+    cal = fit(ps, types, ys)
+    before = reliability(ps.tolist(), ys.tolist()).ece
+    after = reliability(cal.apply_many(ps.tolist(), types), ys.tolist()).ece
     assert after < before
 
 
-def test_platt_and_isotonic_also_fit():
-    p, t, y = _fit_data()
-    for method in ("platt", "isotonic"):
-        cal = TypedCalibrator(method=method).fit(p, t, y, fit_on="test")
-        out = cal.transform(p, t)
+def test_all_methods_fit():
+    ps, types, ys = _fit_data()
+    for method in ("percentile", "platt", "isotonic"):
+        out = fit(ps, types, ys, method=method).apply_many(ps.tolist(), types)
         assert all(0.0 <= v <= 1.0 for v in out)
 
 
 def test_calibration_is_monotone():
-    p, t, y = _fit_data()
-    cal = TypedCalibrator(method="percentile").fit(p, t, y, fit_on="test")
+    ps, types, ys = _fit_data()
+    cal = fit(ps, types, ys)
     grid = [i / 50 for i in range(51)]
-    vals = [cal.transform_one(v, "execute") for v in grid]
+    vals = [cal.apply_one(v, "execute") for v in grid]
     assert all(b >= a - 1e-9 for a, b in zip(vals, vals[1:]))
 
 
-def test_freeze_blocks_refitting():
-    p, t, y = _fit_data()
-    cal = TypedCalibrator().fit(p, t, y, fit_on="test").freeze()
-    with pytest.raises(CalibrationError, match="frozen"):
-        cal.fit(p, t, y)
-
-
-def test_calibrator_roundtrips(tmp_path):
-    p, t, y = _fit_data()
-    cal = TypedCalibrator().fit(p, t, y, fit_on="test").freeze()
-    path = tmp_path / "cal.json"
-    cal.save(path)
-    loaded = TypedCalibrator.load(path)
-    assert loaded.frozen
-    assert loaded.provenance["fit_on"] == "test"
-    assert loaded.transform_one(0.42, "execute") == pytest.approx(cal.transform_one(0.42, "execute"))
-
-
 def test_rare_types_fall_back_to_pooled():
-    p, t, y = _fit_data()
-    p += [0.5] * 5
-    t += ["delegate"] * 5
-    y += [True] * 5
-    cal = TypedCalibrator().fit(p, t, y, fit_on="test")
-    assert "delegate" not in cal.maps  # below MIN_PER_TYPE_N
-    assert cal.transform_one(0.5, "delegate") == cal.pooled.apply(0.5)
+    ps, types, ys = _fit_data()
+    ps = np.append(ps, [0.5] * 5)
+    types = types + ["delegate"] * 5
+    ys = np.append(ys, [True] * 5)
+    cal = fit(ps, types, ys)
+    assert "delegate" not in cal.maps
+    assert cal.apply_one(0.5, "delegate") == cal.pooled.apply(0.5)
 
 
-def test_choose_threshold_in_range():
-    p, t, y = _fit_data()
-    th = choose_threshold(p, y)
-    assert 0.0 <= th <= 1.0
+def test_calibration_roundtrips_and_detects_tampering(tmp_path):
+    ps, types, ys = _fit_data()
+    cal = fit(ps, types, ys, fit_on="test")
+    path = cal.save(tmp_path / "cal.json")
+    loaded = FrozenCalibration.load(path)
+    assert loaded.provenance["fit_on"] == "test"
+    assert loaded.apply_one(0.42, "execute") == pytest.approx(cal.apply_one(0.42, "execute"))
+
+    import json
+
+    blob = json.loads(path.read_text())
+    blob["threshold"] = 0.999
+    path.write_text(json.dumps(blob))
+    with pytest.raises(CalibrationError, match="content hash mismatch"):
+        FrozenCalibration.load(path)
 
 
-# --- aggregation -----------------------------------------------------------
+def test_threshold_lands_in_range():
+    ps, _, ys = _fit_data()
+    assert 0.0 <= choose_threshold(ps.tolist(), ys.tolist()) <= 1.0
 
 
-def test_noisy_or_matches_the_closed_form():
-    p = [0.9, 0.8, 0.5]
-    assert noisy_or_uncertainty(p) == pytest.approx(1 - 0.9 * 0.8 * 0.5)
+# --- derived step labels ----------------------------------------------------
 
 
-def test_noisy_or_saturates_with_length_but_normalized_does_not():
-    short = [0.95] * 4
-    long = [0.95] * 100
-    assert noisy_or_uncertainty(long) > noisy_or_uncertainty(short)
-    assert length_normalized(long) == pytest.approx(length_normalized(short))
+def test_prefix_label_policy_excludes_the_contaminated_tail(records):
+    rec = records["hc"][0]  # mistake_step == 2
+    labels = step_labels(rec, "prefix")
+    assert set(labels) == {0, 1, 2}
+    assert labels[0] is True and labels[1] is True and labels[2] is False
 
 
-def test_aggregate_excludes_final_when_types_given():
-    u = aggregate_trajectory("k", [0.9, 0.9, 0.1], types=["plan", "execute", "final"])
-    assert u.values["noisy_or_no_final"] < u.values["noisy_or"]
-    assert u.primary == u.values["noisy_or"]
+def test_point_label_policy_covers_every_step(records):
+    rec = records["hc"][0]
+    labels = step_labels(rec, "point")
+    assert len(labels) == rec.n_steps
+    assert labels[2] is False and labels[3] is True
 
 
-# --- attribution -----------------------------------------------------------
+def test_labelled_rows_respect_the_policy(records, scores):
+    hc = records["hc"]
+    ps_prefix, _, _ = labelled_rows(hc, scores, policy="prefix")
+    ps_point, _, _ = labelled_rows(hc, scores, policy="point")
+    assert ps_point.size > ps_prefix.size
+
+
+def test_held_aside_needs_enough_files(records):
+    with pytest.raises(ValueError, match="held-aside"):
+        held_aside(records["alg"] + records["hc"], seed=0)
+
+
+def test_held_aside_is_seeded_and_balanced(records):
+    pool = records["alg"] + records["hc"]
+    a = held_aside(pool, seed=0, per_subset=2)
+    b = held_aside(pool, seed=0, per_subset=2)
+    assert a == b
+    assert sum(1 for k in a if k.startswith("alg/")) == 2
+    assert sum(1 for k in a if k.startswith("hc/")) == 2
+
+
+# --- attribution rules ------------------------------------------------------
 
 
 def test_first_crossing_picks_the_earliest_low_step():
-    scores = [_score(0, 0.9), _score(1, 0.2), _score(2, 0.05)]
-    a = first_crossing(scores, 0.5)
+    s = [_score(0, 0.9), _score(1, 0.2), _score(2, 0.05)]
+    a = first_crossing(s, 0.5)
     assert a.step == 1 and a.detail["crossed"]
 
 
-def test_first_crossing_falls_back_to_argmin():
-    scores = [_score(0, 0.9), _score(1, 0.8)]
-    a = first_crossing(scores, 0.5)
+def test_first_crossing_answers_even_when_nothing_crosses():
+    # Every Who&When trajectory failed; declining would drop files from the
+    # denominator instead of scoring a miss.
+    s = [_score(0, 0.9), _score(1, 0.8)]
+    a = first_crossing(s, 0.5)
     assert a.step == 1 and not a.detail["crossed"]
 
 
 def test_argmin_differs_from_first_crossing():
-    scores = [_score(0, 0.9), _score(1, 0.2), _score(2, 0.05)]
-    assert argmin_step(scores).step == 2
-    assert first_crossing(scores, 0.5).step == 1
+    s = [_score(0, 0.9), _score(1, 0.2), _score(2, 0.05)]
+    assert argmin(s).step == 2 and first_crossing(s, 0.5).step == 1
 
 
 def test_changepoint_finds_the_break():
-    scores = [_score(i, 0.9) for i in range(5)] + [_score(i, 0.1) for i in range(5, 10)]
-    assert changepoint(scores).step == 5
+    s = [_score(i, 0.9) for i in range(5)] + [_score(i, 0.1) for i in range(5, 10)]
+    assert changepoint(s).step == 5
 
 
-def test_agent_first_aggregation_choice_changes_the_answer():
-    scores = [
+def test_changepoint_hyperparam_is_frozen():
+    from masattr.attribute.rules import CHANGEPOINT_MIN_SEG
+
+    assert CHANGEPOINT_MIN_SEG == 2
+
+
+def test_agent_first_selects_by_the_agents_best_step():
+    s = [
         _score(0, 0.95, "Orchestrator"),
-        _score(1, 0.05, "WebSurfer"),  # one catastrophic step
-        _score(2, 0.40, "Coder"),
-        _score(3, 0.35, "Coder"),
-        _score(4, 0.30, "Coder"),  # consistently mediocre, never catastrophic
+        _score(1, 0.05, "WebSurfer"),  # one catastrophic step, but a good one too
+        _score(2, 0.90, "WebSurfer"),
+        _score(3, 0.40, "Coder"),
+        _score(4, 0.35, "Coder"),  # never good
     ]
-    assert argmin_step(scores).agent == "WebSurfer"
-    # Mean still follows the single worst step...
-    assert agent_first(scores).agent == "WebSurfer"
-    # ...while accumulating over an agent's whole contribution finds the agent
-    # that is quietly wrong throughout. This is the step-first/agent-first split.
-    assert agent_first(scores, agent_stat="noisy_or").agent == "Coder"
+    assert argmin(s).agent == "WebSurfer"
+    # Selector is per-agent max p: WebSurfer peaks at 0.90, Coder at 0.40.
+    assert agent_first(s, 0.5).agent == "Coder"
 
 
 def test_disagreement_counts():
-    a = {"k": first_crossing([_score(0, 0.1), _score(1, 0.9)], 0.5)}
-    b = {"k": argmin_step([_score(0, 0.1), _score(1, 0.9)])}
-    rows = disagreement(a, b)
-    assert rows[0].n == 1 and rows[0].n_disagree_step == 0
+    s = [_score(0, 0.1), _score(1, 0.9)]
+    rows = disagreement({"k": first_crossing(s, 0.5)}, {"k": argmin(s)})
+    assert rows[0].n == 1 and rows[0].n_step == 0
 
 
-def test_all_methods_registered():
+def test_all_rules_registered():
     assert set(METHODS) == {"first_crossing", "argmin", "changepoint", "agent_first"}

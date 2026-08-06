@@ -1,0 +1,13 @@
+NEAR_EMPTY_CHARS=16
+PLAN_JSON_KEYS=analyst_task,assignments,next_agent,next_speaker,plan,steps,sub_tasks,subtasks,task_assignment,verifier_task
+HC_WORKERS=assistant,coder,computerterminal,executor,filesurfer,websurfer
+QUALIFIER=answer->final,final->final,final answer->final,plan->plan,planning->plan,termination condition met->final,thinking->plan,thought->plan
+ANSWER=(?:^|\b)(?:final\s+answer|the\s+answer\s+is|answer\s*[::]|\\?boxed\{|therefore,?\s+the\s+answer)
+TERMINATE=\bTERMINATE\b|\bTASK[_ ]COMPLETE\b
+BARE_CHOICE=^\s*[\(\[]?([A-Ea-e1-9])[\)\].]?\s*$
+DELEGATE=\b(?:next\s+speaker|hand(?:s|ing)?\s*off\s+to|delegat(?:e|ing)\s+to|assign(?:ing|ed)?\s+(?:this\s+)?to|please\s+(?:proceed|take\s+over|go\s+ahead)|over\s+to\s+you)|@[A-Za-z_][A-Za-z0-9_]*\s*[,:]
+ARROW=->\s*([A-Za-z_][A-Za-z0-9_ ]*)
+ADDRESSED=^\s*([A-Z][A-Za-z0-9_]{2,})\s*,\s+[a-z]
+PLAN=(?:^|\n)\s*(?:here(?:'s| is)\s+(?:the|my)\s+plan|plan\s*[::]|i\s+will\s+(?:first|now)\b|step\s*1\s*[::.]|to\s+solve\s+this,?\s+we\s+(?:will|need))
+TOOL_OUTPUT=(?:^|\n)\s*(?:exitcode\s*[::]|Traceback \(most recent call last\)|```(?:python|bash|sh|output)|Address:\s*http|Viewport position|Here is a screenshot|The web browser is open|File .*? line \d+)
+COMPOUND=^\s*([^()]+?)\s*(?:\(\s*(.*?)\s*\))?\s*$

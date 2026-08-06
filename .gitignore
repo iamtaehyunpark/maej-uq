@@ -9,9 +9,11 @@ venv/
 .DS_Store
 
 # Data + run outputs are never committed.
-data/*
-!data/README.md
+data/
+
 runs/
 out/
 *.pkl
-!tests/fixtures/**/*.pkl
+
+src/masattr/calib/frozen/*.json
+!src/masattr/calib/frozen/README.md

@@ -1,0 +1,189 @@
+"""Shared loader plumbing and the pre-registered corpus asserts (Part C §1)."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Sequence
+
+from ..record import FLAG_AGENT_STEP_MISMATCH, Record, RecordError
+from ..typing.normalize import collapse_orchestrator
+
+#: subset → (n_files, n_flagged). Asserted, not trusted.
+EXPECTED: dict[str, tuple[int, int]] = {"alg": (126, 3), "hc": (58, 3)}
+EXPECTED_TOTAL_STEPS = 4092
+
+_HISTORY_KEYS = ("history", "steps", "messages", "conversation", "trajectory")
+_QUERY_KEYS = ("question", "query", "task", "problem")
+_TRUTH_KEYS = ("ground_truth", "answer", "gt", "final_answer")
+
+
+class LoaderError(RecordError):
+    """Source data does not match the documented schema."""
+
+
+@dataclass(slots=True)
+class LoadReport:
+    subset: str
+    source: str
+    n_files: int = 0
+    n_steps: int = 0
+    counters: dict[str, int] = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)
+
+    def bump(self, k: str, by: int = 1) -> None:
+        self.counters[k] = self.counters.get(k, 0) + by
+
+    def note(self, msg: str) -> None:
+        self.notes.append(msg)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "subset": self.subset,
+            "source": self.source,
+            "n_files": self.n_files,
+            "n_steps": self.n_steps,
+            "counters": dict(self.counters),
+            "notes": self.notes[:50],
+        }
+
+
+def json_files(root: Path) -> list[Path]:
+    if root.is_file():
+        return [root]
+    if not root.exists():
+        raise LoaderError(f"missing subset directory: {root}")
+    files = sorted(p for p in root.rglob("*.json") if not p.name.startswith("."))
+    if not files:
+        raise LoaderError(f"no .json trajectory files under {root}")
+    return files
+
+
+def read_json(path: Path) -> dict:
+    with path.open(encoding="utf-8") as fh:
+        blob = json.load(fh)
+    if not isinstance(blob, dict):
+        raise LoaderError(f"{path.name}: root must be an object, got {type(blob).__name__}")
+    return blob
+
+
+def as_text(value: Any) -> str:
+    """Coerce a payload to text without discarding structure."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, list):
+        parts = [
+            str(v["text"]) if isinstance(v, dict) and "text" in v else as_text(v) for v in value
+        ]
+        return "\n".join(p for p in parts if p)
+    if isinstance(value, dict):
+        for k in ("text", "content", "output", "message"):
+            if isinstance(value.get(k), str):
+                return value[k]
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def pick(d: dict, keys: tuple[str, ...]) -> Any:
+    for k in keys:
+        if d.get(k) not in (None, ""):
+            return d[k]
+    return None
+
+
+def history(d: dict, where: str) -> list[dict]:
+    h = pick(d, _HISTORY_KEYS)
+    if h is None:
+        raise LoaderError(f"{where}: no history list; keys={sorted(d)[:12]}")
+    if not isinstance(h, list):
+        raise LoaderError(f"{where}: history is {type(h).__name__}")
+    for i, item in enumerate(h):
+        if not isinstance(item, dict):
+            raise LoaderError(f"{where}: step {i} is {type(item).__name__}, expected object")
+    return h
+
+
+def require(d: dict, key: str, where: str, *aliases: str) -> Any:
+    if key in d:
+        return d[key]
+    for a in aliases:
+        if a in d:
+            return d[a]
+    raise LoaderError(f"{where}: missing key {key!r} (aliases {aliases}); saw {sorted(d)[:12]}")
+
+
+def cast_step(value: Any, where: str) -> int:
+    """``mistake_step`` string→int. Hard-fails: v2 Part C §1 allows no flag here.
+
+    v1 flagged uncastable values and carried on. v2 does not, and that is the
+    right call for an attribution-only harness — the annotated step *is* the
+    label, so a file whose label cannot be read is not a datapoint.
+    """
+    if value is None:
+        raise LoaderError(f"{where}: mistake_step is null")
+    if isinstance(value, bool):
+        raise LoaderError(f"{where}: mistake_step is a bool ({value!r})")
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value).strip())
+    except ValueError as e:
+        raise LoaderError(f"{where}: uncastable mistake_step {value!r}") from e
+
+
+def flag_mismatch(rec: Record, report: LoadReport) -> Record:
+    """Set ``agent_step_mismatch`` where the annotated agent is not the agent of
+    the annotated step, after orchestrator-name collapse."""
+    annotated = collapse_orchestrator(rec.label_mistake_agent)
+    actual = collapse_orchestrator(rec.steps[rec.label_mistake_step].agent)
+    if annotated == actual:
+        return rec
+    report.bump("agent_step_mismatch")
+    report.note(
+        f"{rec.file_id}: annotation names {rec.label_mistake_agent!r} but step "
+        f"{rec.label_mistake_step} is {rec.steps[rec.label_mistake_step].agent!r}"
+    )
+    return rec.with_flag(FLAG_AGENT_STEP_MISMATCH)
+
+
+def finish(records: list[Record], report: LoadReport) -> LoadReport:
+    report.n_files = len(records)
+    report.n_steps = sum(r.n_steps for r in records)
+    return report
+
+
+def check_expectations(
+    records: Sequence[Record], subset: str, *, strict: bool = True
+) -> list[str]:
+    """Assert the pre-registered counts for one subset."""
+    if subset not in EXPECTED:
+        return []
+    n_files, n_flagged = EXPECTED[subset]
+    problems = []
+    if len(records) != n_files:
+        problems.append(f"{subset}: expected {n_files} files, got {len(records)}")
+    got_flagged = sum(1 for r in records if FLAG_AGENT_STEP_MISMATCH in r.flags)
+    if got_flagged != n_flagged:
+        problems.append(
+            f"{subset}: expected {n_flagged} agent_step_mismatch files, got {got_flagged}"
+        )
+    if problems and strict:
+        raise AssertionError("; ".join(problems))
+    return problems
+
+
+def check_total_steps(
+    alg: Sequence[Record], hc: Sequence[Record], *, strict: bool = True
+) -> list[str]:
+    n = sum(r.n_steps for r in alg) + sum(r.n_steps for r in hc)
+    if n == EXPECTED_TOTAL_STEPS:
+        return []
+    msg = f"whowhen: expected {EXPECTED_TOTAL_STEPS} total steps, got {n}"
+    if strict:
+        raise AssertionError(msg)
+    return [msg]

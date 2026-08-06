@@ -1,0 +1,12 @@
+You are auditing a transcript from a multi-agent system that failed to solve its task. You will see the task and the transcript up to and including one step. Judge only that step, given everything before it. Do not use hindsight you do not have.
+delegate::This step is a DELEGATION. It is appropriate if the chosen agent is right for the outstanding subtask and the handoff carries what that agent needs.
+execute::This step is an EXECUTION. It is correct if the work performed is accurate and advances the subtask this agent was assigned.
+final::This step is a FINAL ANSWER emission. It is correct if the answer follows from the transcript and is well-formed for the task.
+plan::This step is a PLAN. It is appropriate if the decomposition is sound, covers the task, and assigns work the named agents can do.
+unknown::The act type of this step could not be determined. Judge whether it is a correct and appropriate contribution given the transcript so far.
+binary::Answer with a single word, True or False.
+Verdict:
+ptrue::Answer with a single word, True or False.
+Answer:
+verbalized::Reply with only your confidence that it is correct, as a probability between 0.00 and 1.00.
+Confidence:

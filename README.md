@@ -1,153 +1,153 @@
-# masuq — MAS-UQ pilot
+# masattr — MAS attribution harness
 
-Uncertainty quantification over **frozen multi-agent-system trajectories**.
+Failure attribution over **frozen multi-agent trajectories**. Given a Who&When
+transcript of a multi-agent system that failed, locate the decisive mistake:
+which agent, which step.
 
-Four log formats load into one record schema; every step gets a normalised act
-type; a judge scores each step prefix-conditionally with KV prefix sharing; one
-per-type calibration map is fit once and frozen; the calibrated scores are then
-read two ways — as **trajectory-level uncertainty** (noisy-OR) and as **failure
-attribution** (first crossing).
+The method is a typed, externally-estimated per-step error field. A judge scores
+every step prefix-conditionally; per-type calibration maps — fit once on a
+single-agent corpus and frozen — turn those scores into probabilities; the
+earliest step whose probability crosses the threshold is the attribution.
 
-Implements [`mas_uq_pilot_spec_v1.md`](mas_uq_pilot_spec_v1.md). Every module
-docstring cites the spec section it implements.
+Implements [`docs/mas_attr_harness_spec_v2.md`](docs/mas_attr_harness_spec_v2.md).
+Module docstrings cite the section they implement. The port receipts are in
+[`PORT_REPORT.md`](PORT_REPORT.md).
 
-> **Status: pilot / feasibility.** No data is committed and no numbers are
-> claimed here. The repository is the harness; the numbers come from running it
-> on data you supply.
+> **Status: pilot.** No data is committed and no numbers are claimed here. The
+> repository is the harness; the numbers come from running it on data you supply.
 
 ## Install
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/python -m pytest        # 80 tests, no data or GPU required
+.venv/bin/python -m pytest        # 84 tests, no data / GPU / network required
 ```
 
-Optional extras: `.[judge]` for the local-LM judge (torch + transformers),
-`.[openai]` for the gpt-4o baseline arm.
+Extras: `.[judge]` for the local-LM judge (torch + transformers), `.[openai]`
+for the gpt-4o baseline arm.
 
 ## Data
 
-Nothing is bundled. Point the package at your copies of
-[MAS-Trajectory-Understanding](https://github.com/) logs and the
-[Who&When](https://github.com/) annotations — see [`data/README.md`](data/README.md)
-for the expected layout — then:
+Nothing is bundled. Put your Who&When copy under one root:
 
-```bash
-export MASUQ_DATA_ROOT=/path/to/data
-masuq paths          # resolve and verify every expected file
+```
+<root>/whowhen/Algorithm-Generated/*.json    # subset "alg"  (126 files)
+<root>/whowhen/Hand-Crafted/*.json           # subset "hc"   (58 files)
 ```
 
-`masuq paths` exits non-zero and names what is missing, so it is the first thing
-to run after downloading.
+then `export MASATTR_DATA_ROOT=<root>` (or pass `--data-root`).
 
-## The pipeline
+## Running the manifest
 
 ```bash
-masuq load --assert                       # loaders + flags + pre-registered counts
-masuq typecheck --audit-out audit.json    # classifier vs native/parsed types
-masuq smoke --n-steps 50                  # judge harness sanity check
-masuq judge --subset autogen_mmlu --backend hf --model <id> --out-scores runs/autogen.jsonl
-masuq judge --subset camel_math  --backend hf --model <id> --out-scores runs/camel.jsonl
-masuq exp0 --fit-scores runs/autogen.jsonl --test-scores runs/camel.jsonl
-masuq trajectory --scores runs/autogen.jsonl runs/camel.jsonl --calibrator runs/exp0/calibrator_frozen.json
-masuq judge --subset alg --backend hf --model <id> --out-scores runs/alg.jsonl
-masuq judge --subset hc  --backend hf --model <id> --out-scores runs/hc.jsonl
-masuq attribution --scores runs/alg.jsonl runs/hc.jsonl \
-    --calibrator runs/exp0/calibrator_frozen.json --threshold-file runs/exp0/threshold.json
-masuq baselines --generators openai:gpt-4o hf:<id> --api-key sk-...
-masuq audit --judges <j1> <j2> <j3>
+masattr freeze                                     # hash prompts / type rules / type map
+masattr load --assert                              # 126 / 58 / 4092 steps / 3+3 flagged
+masattr typecheck --audit-out audit.json           # rules vs HC parsed types, ≥90% gate
+masattr judge --judge hf:<id>                      # × readout × policy × GT setting
+masattr e0 --paper1-scores p1.jsonl --scores runs/scores/*.jsonl
+masattr e1 --scores runs/scores/*.jsonl --calibration src/masattr/calib/frozen/calibration.json
+masattr baselines --generators openai:gpt-4o judge:hf:<id> --impl repo --repo-path <checkout>
+masattr e2 / e3 / e4 / e5 / e6 / e7                # ablations
+masattr e9 --e1-results runs/out/results.json      # stratification, no new runs
 ```
 
-Every command runs with `--backend mock` / `--generators mock` for a
-dependency-free dry run of the whole pipeline.
-
-## What each piece does
-
-| Module | Spec | Purpose |
-|---|---|---|
-| `schema.py` | §0 | The unified record; validation hard-fails rather than coercing |
-| `loaders/` | §1 | Four adapters, the label join, the pre-registered counts |
-| `typing_/` | §2 | Rule classifier + its validation table against known types |
-| `judge/` | §3 | Prefix-conditional P(True), evidence policy, surrogate baseline |
-| `calibration.py` | §4 | Per-type maps, fit once, frozen, persisted |
-| `aggregate.py` | §5 | Noisy-OR trajectory `U` and its ablations |
-| `attribution.py` | §5 | First crossing, argmin, changepoint, agent-first |
-| `metrics.py` | §6, §8 | AUROC / AUARC / reliability, bootstrap CIs, dual scorer |
-| `experiments/` | §4–§7 | Exp-0 falsifier, both tracks, baselines, label audit |
-
-## Design commitments worth knowing before you read the code
-
-**Loaders hard-fail.** A silently repaired record is a provenance hole, and the
-pilot's claims rest entirely on provenance. The MATU label join asserts
-`task_id × run` alignment and raises on any unmatched key in either direction —
-the spec says *asserted, not assumed*, and `--lenient-labels` exists only for
-exploring a new dump.
-
-**The classifier never overrides a known type.** Steps carrying `native` or
-`parsed` types are untouched; the classifier fills in `classified` steps only.
-Its agreement with the known types is a reportable table with a 90% gate, not an
-assumption.
-
-**Prefix sharing is structural, not an optimisation.** The judge interface is a
-stateful `PrefixScorer` whose shared prefix only grows, so a `T`-step trajectory
-costs `O(T)` prefix tokens. On Who&When's 130-step traces the quadratic version
-is simply not runnable.
-
-**Evidence never looks ahead.** The augmentation that rescues near-empty
-`execute` steps pulls from the assigned subtask and *earlier* peer steps in the
-same turn block. Letting a future step in would make the score non-causal and
-inflate attribution accuracy for free.
-
-**Calibration is fit once, then frozen.** `TypedCalibrator.freeze()` makes
-refitting raise. The attribution threshold is chosen on the calibration corpus
-and persisted alongside the maps; `masuq attribution` refuses to run without one
-rather than picking a threshold on the corpus it is scoring.
-
-**Exp-0 is a real falsifier.** It runs before any attribution number is seen,
-with its pass gates pre-registered in the module. `masuq exp0` exits **2** when
-calibration fails to transfer — a legitimate outcome that switches the
-attribution track to the disclosed leave-one-out fallback.
-
-**Both scorers, both flag sets, always.** Who&When numbers are reported four
-ways: exact-match (primary) and the published substring scorer (comparability,
-carrying its `"1" in "12"` artifact), each with and without the
-`agent_step_mismatch`-flagged files. CIs bootstrap over *files*, since the file
-is the sampling unit.
-
-**Baselines get two judge arms.** Reproducing all_at_once / step_by_step /
-binary_search with gpt-4o *and* with our judge model is what separates "their
-method is weaker" from "their judge was stronger".
-
-## Known limits
-
-- The calibration fit target is per-*run* correctness propagated to each step. A
-  correct run can contain a bad step, so the label is biased; this is why the v1
-  default is a rank-preserving monotone map rather than Platt. Stated at the top
-  of `calibration.py`.
-- Plain noisy-OR saturates as `T` grows, so on 130-step HC traces it is near-1 by
-  construction. Length-normalised and max variants are reported alongside it, and
-  the trajectory track is validated on MATU, where `T` is short.
-- The "intrinsic" baseline is a surrogate: frozen logs do not carry the
-  generating model's distributions. It is reported as the only intrinsic-flavoured
-  signal computable here and is expected to be weak.
-- MATU labels are inherited. `masuq audit` re-labels 100 sampled runs with a
-  3-judge pipeline to bound how far they can be trusted; it does not correct them.
-- MATU-AutoGen `query` is null by construction (the log is keyed by task id). No
-  v1 policy depends on it.
-- StarAgent plan steps embed delegation payloads; v1 types the whole step as
-  `plan`. Splitting plan from delegate is deferred.
+Everything runs end to end with `--judge mock` / `--generators mock` for a
+dependency-free dry run. `masattr <cmd> --help` shows that experiment's flags
+and nothing else.
 
 ## Layout
 
 ```
-src/masuq/
-  schema.py  config.py  cli.py
-  loaders/   base.py matu_common.py matu_camel.py matu_autogen.py
-             whowhen.py labels.py expectations.py
-  typing_/   classifier.py validate.py
-  judge/     backends.py prompts.py evidence.py harness.py surrogate.py
-  calibration.py  aggregate.py  attribution.py  metrics.py
-  experiments/ exp0_calibration_transfer.py exp_trajectory.py
-               exp_attribution.py exp_baselines.py exp_label_audit.py
-tests/         synthetic fixtures in all four source formats
+src/masattr/
+  record.py       frozen record — every stage consumes and returns this
+  paths.py manifest.py cli.py
+  loaders/        whowhen_ag.py whowhen_hc.py _common.py
+  typing/         normalize.py (HC parse + AG rules)  validate.py (the gate)
+  judge/          client.py prompts.py score.py
+  calib/          fit.py apply.py frozen/
+  attribute/      rules.py
+  eval/           scorers.py ci.py
+  baselines/      whowhen_repo.py surrogate.py
+  specs/          frozen prompts, type rules, type map, hashes
+  runs/           one file per experiment, argparse only
 ```
+
+## Design commitments
+
+**Loaders hard-fail.** An uncastable `mistake_step`, an out-of-range one, an
+empty step — all raise. v1 flagged and carried on; v2 does not, and that is
+right for an attribution-only harness: the annotated step *is* the label, so a
+file whose label cannot be read is not a datapoint.
+
+**Records are frozen.** A record is a loaded fact about a trajectory. Scores
+live in separate arrays keyed by `(file_id, step_idx)`; no stage edits a record.
+
+**Types are parsed where possible, classified only where necessary.** HC's
+compound role encodes the act, so HC types are read, not guessed — which is what
+makes HC the reference corpus for validating the AG rules. The rules never
+override a parsed type, and `masattr typecheck` exits non-zero below 90%
+agreement.
+
+**Prefix sharing is structural.** The judge client's shared prefix only grows,
+so a `T`-step trajectory costs `O(T)` prefix tokens. HC reaches 130 steps; the
+quadratic path is not runnable. `score_record` raises if handed a client that
+does not expose the shared-prefix path.
+
+**Evidence never looks ahead.** The rescue for near-empty `execute` steps pulls
+the assigned subtask and *earlier* same-turn peers. A future step in the
+evidence would make the score non-causal and inflate attribution for free. The
+one deliberate exception is `--policy hindsight`, which is the E5 ceiling, not a
+method.
+
+**One prompt scaffold, three readouts.** Logit P(True), verbalized number, and
+binary verdict share the preamble and the question; only the final instruction
+differs. That is what makes E2 an ablation rather than three methods.
+
+**Calibration is fit once, frozen, and hash-checked.** `FrozenCalibration.load`
+refuses a file whose `content_hash` no longer matches its contents. The
+first-crossing threshold is chosen on the *fitting* corpus and travels with the
+maps; `masattr e1` refuses to run without one rather than picking a threshold on
+the corpus it is scoring.
+
+**E0 is a real falsifier.** It runs first, its gates are pre-registered in the
+module, and it exits **2** when transfer fails — a legitimate outcome that puts
+the disclosed leave-one-out fallback in force and weakens the uniformity claim
+in the paper text.
+
+**Ablations refuse single arms.** `masattr e2` stops if every input score file
+has the same readout. A one-row ablation is not an ablation.
+
+**Both scorers, every slice, always.** Exact match is primary; the substring
+scorer reproduces the published regime and carries its artifact (predicted step
+`1` scores as a hit against gold `12`). Tables are dual-reported with and
+without the 6 flagged files and the held-aside 20. CIs bootstrap over *files*.
+
+**Runs are reproducible from `(commit, manifest)`.** Every experiment verifies
+the live prompts and type rules still match `specs/` before it starts.
+
+## Known limits and stated assumptions
+
+- **Who&When has no per-step labels.** It annotates one decisive mistake per
+  trajectory. Reliability diagrams need per-step correctness, so it is *derived*:
+  the default `prefix` policy uses steps `0..mistake_step` with
+  `correct = idx < mistake_step`, excluding the post-mistake tail rather than
+  guessing it. The `point` policy keeps every step and asserts the tail is fine.
+  Documented at the top of `calib/apply.py`; both are pre-registered.
+- **E0 needs paper 1's corpus scored by this judge** — a JSONL of
+  `{p_raw, type, correct}`. Without it `masattr e0` stops. It will not quietly
+  calibrate on Who&When, which is the very thing the fallback is meant to
+  disclose.
+- **The paper-1 type map is data, not code.** It lives in
+  `specs/paper1_type_map.json`, is hashed into every manifest, and unmapped
+  source types become `unknown` and are counted — never silently dropped.
+- **The surrogate baseline is a surrogate.** Frozen logs do not carry the
+  generating model's distributions. A proxy LM's logprob and entropy are the
+  closest computable thing, they are uncalibrated, and they are expected to be
+  weak. Read the argmin row.
+- **`--impl local` for the baselines is not the reproduction.** It re-prompts the
+  three strategies so the pipeline runs without their checkout; every row is
+  stamped `impl=local` and the manifest says so.
+- **E8 (success-control) is not built.** Part D gates it behind an explicit owner
+  decision.
+- **The port source was substituted.** Paper 1's harness was unavailable; the
+  allowlisted components were re-derived from the v1 package. See PORT_REPORT.

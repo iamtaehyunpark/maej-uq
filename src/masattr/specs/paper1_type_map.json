@@ -1,0 +1,13 @@
+{
+  "act": "execute",
+  "action": "execute",
+  "answer": "final",
+  "final": "final",
+  "finish": "final",
+  "observation": "execute",
+  "plan": "plan",
+  "reason": "plan",
+  "think": "plan",
+  "thought": "plan",
+  "tool": "execute"
+}

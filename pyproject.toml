@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "masuq"
-version = "0.1.0"
-description = "MAS-UQ pilot: loaders, step typing, judge harness, calibration, attribution"
+name = "masattr"
+version = "0.2.0"
+description = "MAS-Attribution harness: Who&When loaders, step typing, judge field, calibration, attribution"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -25,10 +25,13 @@ dev = [
 ]
 
 [project.scripts]
-masuq = "masuq.cli:main"
+masattr = "masattr.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+masattr = ["specs/*.txt", "specs/*.json", "calib/frozen/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
