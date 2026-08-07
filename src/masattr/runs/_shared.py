@@ -89,8 +89,10 @@ def add_judge_args(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
     p.add_argument(
         "--lookahead",
         default="none",
-        choices=("none", "resp", "own"),
-        help="evidence arm: none=W0 (prefix-conditional), resp=W+resp, own=W+own",
+        choices=("none", "resp", "own", "deleg"),
+        help="evidence arm: none=W0 (prefix-conditional), resp=W+resp, own=W+own, "
+        "deleg=W+deleg (smoke-motivated E5 arm: delegate steps get a window to the "
+        "subtask's resolution)",
     )
     p.add_argument(
         "--prefix-window",
@@ -422,9 +424,26 @@ def run_config_tables(
             m: position_table(p, gold_map(subset_records), lengths)
             for m, p in preds.items()
         }
+        # The primary rule's fallback rate is the first thing E1 is read for, so
+        # it is a reported field rather than something recomputed by hand.
+        primary_preds = preds[primary]
+        reasons: dict[str, int] = {}
+        for a in primary_preds.values():
+            reasons[a.detail.get("reason", "regime_found")] = (
+                reasons.get(a.detail.get("reason", "regime_found"), 0) + 1
+            )
+        n_pred = max(len(primary_preds), 1)
+        fallback = {
+            "rate": round(
+                sum(v for k, v in reasons.items() if k != "regime_found") / n_pred, 4
+            ),
+            "n": n_pred,
+            "reasons": reasons,
+        }
         label = config_label(cfg)
         results["configs"][label] = {
             "positions": positions,
+            "primary_fallback": fallback,
             "scores": table,
             "n_files": len(scores),
             "disagreement_by_type": [r.to_dict() for r in dis_type],
@@ -435,6 +454,11 @@ def run_config_tables(
         }
         block = [
             render(table, f"— {label}"),
+            "",
+            f"**{primary} fallback rate: {fallback['rate']:.1%}** "
+            f"({fallback['n']} files) — {fallback['reasons']}. A spike-structured "
+            "field has no two-regime split to find, so heavy fallback is a "
+            "statement about the field, not a failure of the run.",
             "",
             render_positions(positions),
             "",

@@ -21,6 +21,17 @@ Evidence has two independent parts, and conflating them was a real bug once.
 * ``resp`` (**W+resp**) — the immediately following contiguous steps by *other*
   agents, capped at 2: the realized response to step ``t``.
 * ``own`` (**W+own**) — W+resp plus the acting agent's own next appearance.
+* ``deleg`` (**W+deleg**) — ``resp``, except that a ``delegate`` step gets a
+  window extended to the delegated subtask's resolution: following steps until
+  control returns to the delegator, capped at ``DELEG_CAP``.
+
+``deleg`` is **smoke-motivated**, added after Stage-0 and before E1, and every
+row it produces says so. The Stage-0 read showed delegation faults scoring
+*worse* than chance while worker faults scored better, and W+resp made them
+worse still — a cap-2 window mostly captures the assignee's compliant
+acknowledgment, while the struggle that makes the delegation wrong surfaces
+later. This arm tests that explanation. It is an E5 ablation row; the primary
+arm is W0 and was locked by the pre-fixed rule before this existed.
 
 W+resp exists because a delegation error's evidence is the assignee's downstream
 struggle, which same-turn peers cannot see. The near-empty-execute rescue is
@@ -48,11 +59,16 @@ from .prompts import preamble, readout, render_step
 
 POLICIES = ("typed", "plain", "hindsight")
 
-#: Lookahead arms. ``none`` is prefix-conditional; the other two are not.
-LOOKAHEAD = ("none", "resp", "own")
+#: Lookahead arms. ``none`` is prefix-conditional; the others are not.
+LOOKAHEAD = ("none", "resp", "own", "deleg")
 
 #: How many following steps by other agents count as "the realized response".
 RESP_CAP = 2
+
+#: Window for a delegation's resolution. Wider than ``RESP_CAP`` because a
+#: delegation's wrongness is consequence-visible: the assignee acknowledges
+#: first and struggles afterwards.
+DELEG_CAP = 5
 MAX_POINTER_CHARS = 800
 
 #: Pre-registered prefix budget, in characters. Measured in characters rather
@@ -221,9 +237,16 @@ def lookahead_steps(steps: Sequence[Step], t: int, mode: str) -> list[Step]:
     if mode == "none":
         return []
     actor = steps[t].agent
+    # A delegation's window runs to the subtask's resolution — until control
+    # returns to the delegator — rather than to the next couple of messages.
+    cap = (
+        DELEG_CAP
+        if mode == "deleg" and steps[t].type_norm == "delegate"
+        else RESP_CAP
+    )
     out: list[Step] = []
     for s in steps[t + 1 :]:
-        if s.agent == actor or len(out) >= RESP_CAP:
+        if s.agent == actor or len(out) >= cap:
             break
         out.append(s)
     if mode == "own":

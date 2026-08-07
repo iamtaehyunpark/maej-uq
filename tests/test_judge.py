@@ -301,3 +301,32 @@ def test_near_empty_rescue_is_independent_of_the_arm():
     for mode in ("none", "resp", "own"):
         ts = score_record(rec, MockClient(), lookahead=mode)
         assert ts.scores[2].augmented
+
+
+def test_deleg_widens_the_window_only_for_delegate_steps():
+    from masattr.judge.score import DELEG_CAP, RESP_CAP, lookahead_steps
+
+    # Orchestrator delegates at 0, then five other agents work, then it returns.
+    steps = [Step(0, "Orch", "o", "W, go", "delegate", "parsed")]
+    steps += [Step(i, f"A{i}", "a", "work", "execute", "parsed") for i in range(1, 7)]
+    steps.append(Step(7, "Orch", "o", "back to me", "plan", "parsed"))
+
+    assert DELEG_CAP > RESP_CAP
+    # The delegation gets the wide window...
+    assert len(lookahead_steps(steps, 0, "deleg")) == DELEG_CAP
+    assert len(lookahead_steps(steps, 0, "resp")) == RESP_CAP
+    # ...and a non-delegate step does not.
+    assert len(lookahead_steps(steps, 1, "deleg")) == RESP_CAP
+
+
+def test_deleg_window_stops_when_control_returns():
+    from masattr.judge.score import lookahead_steps
+
+    steps = [
+        Step(0, "Orch", "o", "W, go", "delegate", "parsed"),
+        Step(1, "W", "w", "ok", "execute", "parsed"),
+        Step(2, "Orch", "o", "back already", "plan", "parsed"),
+        Step(3, "W", "w", "more", "execute", "parsed"),
+    ]
+    # Control returns at step 2, so the window is just step 1 despite the cap.
+    assert [s.idx for s in lookahead_steps(steps, 0, "deleg")] == [1]
