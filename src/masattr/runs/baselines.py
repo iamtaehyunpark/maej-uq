@@ -56,6 +56,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--served-model", help="model name to rewrite their calls to")
     p.add_argument(
+        "--repo-max-tokens",
+        type=int,
+        help="their --max_tokens. Their default (1024) is sized for a terse "
+        "non-reasoning model; a reasoning judge is truncated mid-thought and "
+        "never reaches their required output format, so the comparison would "
+        "measure truncation rather than method",
+    )
+    p.add_argument(
         "--repo-python",
         help="interpreter with their dependencies; theirs is a different "
         "environment from this package's",
@@ -116,6 +124,7 @@ def main(argv=None) -> int:
                     base_url=args.served_base_url,
                     model_rewrite=args.served_model,
                     python_exe=args.repo_python,
+                    max_tokens=args.repo_max_tokens,
                 )
                 snapshots = (
                     sorted(set(receipt.read_text().split())) if receipt.exists() else []

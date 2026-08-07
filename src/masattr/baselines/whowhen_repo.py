@@ -190,6 +190,7 @@ def repo_command(
     api_key: str | None,
     device: str | None = None,
     python_exe: str | None = None,
+    max_tokens: int | None = None,
 ) -> list[str]:
     """Their documented command line. Credentials are passed explicitly.
 
@@ -211,6 +212,8 @@ def repo_command(
     ]
     if api_key:
         cmd += ["--api_key", api_key]
+    if max_tokens:
+        cmd += ["--max_tokens", str(max_tokens)]
     if device:
         cmd += ["--device", device]
     return cmd
@@ -229,6 +232,7 @@ def run_repo_subprocess(
     base_url: str | None = None,
     model_rewrite: str | None = None,
     python_exe: str | None = None,
+    max_tokens: int | None = None,
     timeout: int = 60 * 60 * 6,
 ) -> str:
     """Run their script in its own directory and return stdout.
@@ -246,6 +250,7 @@ def run_repo_subprocess(
         api_key=api_key,
         device=device,
         python_exe=python_exe,
+        max_tokens=max_tokens,
     )
     env = dict(os.environ)
     shim_dir = write_openai_shim(snapshot_receipt)
