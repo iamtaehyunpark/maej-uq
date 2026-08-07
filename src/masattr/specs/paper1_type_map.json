@@ -1,13 +1,39 @@
 {
-  "act": "execute",
-  "action": "execute",
-  "answer": "final",
-  "final": "final",
-  "finish": "final",
-  "observation": "execute",
-  "plan": "plan",
-  "reason": "plan",
-  "think": "plan",
-  "thought": "plan",
-  "tool": "execute"
+  "_comment": [
+    "Paper-1 step (step_kind x tau) -> function type, consumed by calib/fit.py.",
+    "This is the one place the single-agent and multi-agent vocabularies meet,",
+    "so it is data, hashed into every run manifest, not code.",
+    "Rules are evaluated in order; the first whose conditions all match wins.",
+    "A rule matches when step_kind matches (or is absent) and every listed tau",
+    "key equals the row's value.",
+    "STATUS MUST BE 'frozen' BEFORE E0 RUNS. Owner: Taehyun. The draft below is",
+    "the spec's sketch (thought->plan; action x info->execute; action x",
+    "world_mod->execute) and has not been reviewed against the corpus."
+  ],
+  "default": "unknown",
+  "rules": [
+    {
+      "step_kind": "thought",
+      "type": "plan"
+    },
+    {
+      "step_kind": "action",
+      "tau": {
+        "info": true
+      },
+      "type": "execute"
+    },
+    {
+      "step_kind": "action",
+      "tau": {
+        "world_mod": true
+      },
+      "type": "execute"
+    },
+    {
+      "step_kind": "action",
+      "type": "execute"
+    }
+  ],
+  "status": "draft"
 }

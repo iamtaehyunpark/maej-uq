@@ -27,6 +27,8 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     manifest = open_manifest("judge", args)
     records = load_records(args)
+    manifest.record_models(judge=args.judge)
+    manifest.record_anomalies([r for recs in records.values() for r in recs])
     client = build_client(args.judge, device=args.device, seed=args.seed)
 
     scores_dir = Path(args.scores_dir)
@@ -35,6 +37,12 @@ def main(argv=None) -> int:
     tag += "_gt" if args.with_gt else "_nogt"
     if args.no_types:
         tag += "_notypes"
+    if args.no_subtask_pointer:
+        tag += "_nosubtask"
+    if args.no_peer_corroboration:
+        tag += "_nopeer"
+    if args.prefix_window:
+        tag += f"_win{args.prefix_window}"
 
     summary: dict = {}
     for subset, recs in records.items():
@@ -53,6 +61,10 @@ def main(argv=None) -> int:
             policy=args.policy,
             with_gt=args.with_gt,
             use_types=not args.no_types,
+            subtask_pointer=not args.no_subtask_pointer,
+            peer_corroboration=not args.no_peer_corroboration,
+            prefix_window=args.prefix_window,
+            budget_chars=args.prefix_budget_chars,
             out_path=out_path,
             progress=progress,
         )

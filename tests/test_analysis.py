@@ -80,7 +80,7 @@ def test_slices_drop_flagged_files(records):
 def test_slices_add_held_aside_when_present(records):
     alg = records["alg"]
     s = slices(alg, held_aside={"alg/alg_0"})
-    assert "excl_held_aside" in s and "excl_both" in s
+    assert "excl_held_aside" in s and "excl_all_excluded" in s
     assert len(s["excl_held_aside"]) == 3
 
 
@@ -245,3 +245,67 @@ def test_disagreement_counts():
 
 def test_all_rules_registered():
     assert set(METHODS) == {"first_crossing", "argmin", "changepoint", "agent_first"}
+
+
+# --- per-type thresholds and the pooled-calibration arm ---------------------
+
+
+def test_fit_produces_per_type_thresholds():
+    ps, types, ys = _fit_data(n=3000)
+    cal = fit(ps, types, ys)
+    assert cal.thresholds  # §5's "crosses *its* calibrated threshold"
+    assert set(cal.thresholds) <= set(cal.maps)
+    for t in cal.thresholds:
+        assert 0.0 <= cal.thresholds[t] <= 1.0
+
+
+def test_threshold_for_switches_between_the_two_arms():
+    ps, types, ys = _fit_data(n=3000)
+    cal = fit(ps, types, ys)
+    cal.thresholds["plan"] = 0.11
+    assert cal.threshold_for("plan", per_type=True) == 0.11
+    assert cal.threshold_for("plan", per_type=False) == cal.threshold
+    # A type without its own threshold falls back to the global one.
+    assert cal.threshold_for("delegate", per_type=True) == cal.threshold
+
+
+def test_pooled_only_turns_typing_off_and_changes_nothing_else():
+    ps, types, ys = _fit_data(n=3000)
+    cal = fit(ps, types, ys)
+    pooled = cal.pooled_only()
+    assert pooled.maps == {} and pooled.thresholds == {}
+    assert pooled.method == cal.method and pooled.threshold == cal.threshold
+    assert pooled.apply_one(0.4, "plan") == pooled.apply_one(0.4, "execute")
+
+
+def test_per_type_thresholds_change_the_crossing():
+    # A plan step at 0.45 crosses a per-type threshold of 0.6 but not a global 0.3.
+    s = [_score(0, 0.45, t="plan"), _score(1, 0.05, t="execute")]
+    assert first_crossing(s, 0.3).step == 1
+    assert first_crossing(s, {"plan": 0.6, "": 0.3}).step == 0
+
+
+def test_threshold_mapping_falls_back_to_the_default_entry():
+    s = [_score(0, 0.2, t="delegate")]
+    assert first_crossing(s, {"plan": 0.9, "": 0.5}).step == 0
+
+
+# --- normalized position ----------------------------------------------------
+
+
+def test_position_table_detects_a_late_biased_rule():
+    from masattr.attribute.rules import position_table
+
+    preds = {"hc/a": first_crossing([_score(0, 0.9), _score(1, 0.9), _score(2, 0.1)], 0.5)}
+    table = position_table(preds, {"hc/a": ("A", 0)}, {"hc/a": 3})
+    assert table["predicted"]["median"] == 1.0
+    assert table["gold"]["median"] == 0.0
+    assert table["delta_pred_minus_gold"]["mean"] > 0
+    assert table["fraction_predicted_after_gold"] == 1.0
+
+
+def test_position_table_skips_single_step_trajectories():
+    from masattr.attribute.rules import position_table
+
+    preds = {"hc/a": first_crossing([_score(0, 0.1)], 0.5)}
+    assert position_table(preds, {"hc/a": ("A", 0)}, {"hc/a": 1})["gold"]["n"] == 0

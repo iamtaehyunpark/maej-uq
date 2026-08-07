@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -49,8 +49,23 @@ class Attribution:
         }
 
 
+Threshold = float | Mapping[str, float]
+
+
 def _p(scores: Sequence[StepScore]) -> list[float]:
     return [s.p for s in scores]
+
+
+def _thr(threshold: Threshold, type_norm: str) -> float:
+    """Resolve the crossing threshold for one step.
+
+    §5 says a step crosses *its* calibrated threshold, so a mapping of per-type
+    thresholds is the typed arm and a bare float is the global-threshold arm.
+    A type absent from the mapping falls back to its ``""`` entry.
+    """
+    if isinstance(threshold, Mapping):
+        return float(threshold.get(type_norm, threshold.get("", 0.5)))
+    return float(threshold)
 
 
 def _at(scores: Sequence[StepScore], i: int, method: str, extra: dict | None = None) -> Attribution:
@@ -58,7 +73,7 @@ def _at(scores: Sequence[StepScore], i: int, method: str, extra: dict | None = N
     return Attribution(s.key, method, s.step_idx, s.agent, s.p, extra or {})
 
 
-def first_crossing(scores: Sequence[StepScore], threshold: float) -> Attribution:
+def first_crossing(scores: Sequence[StepScore], threshold: Threshold) -> Attribution:
     """Earliest step below ``threshold``; argmin if the trajectory never crosses.
 
     The fallback matters: every Who&When trajectory failed, so a no-crossing
@@ -68,19 +83,19 @@ def first_crossing(scores: Sequence[StepScore], threshold: float) -> Attribution
     if not scores:
         return Attribution("", "first_crossing", None, None)
     for i, s in enumerate(scores):
-        if s.p < threshold:
+        if s.p < _thr(threshold, s.type_norm):
             return _at(scores, i, "first_crossing", {"crossed": True})
     i = int(np.argmin(_p(scores)))
     return _at(scores, i, "first_crossing", {"crossed": False, "fallback": "argmin"})
 
 
-def argmin(scores: Sequence[StepScore], threshold: float = 0.0) -> Attribution:
+def argmin(scores: Sequence[StepScore], threshold: Threshold = 0.0) -> Attribution:
     if not scores:
         return Attribution("", "argmin", None, None)
     return _at(scores, int(np.argmin(_p(scores))), "argmin")
 
 
-def changepoint(scores: Sequence[StepScore], threshold: float = 0.0) -> Attribution:
+def changepoint(scores: Sequence[StepScore], threshold: Threshold = 0.0) -> Attribution:
     """Binary segmentation: the split maximising ``mean(before) − mean(after)``.
 
     Returns the first step of the worse segment. Unlike argmin this is robust to
@@ -100,7 +115,7 @@ def changepoint(scores: Sequence[StepScore], threshold: float = 0.0) -> Attribut
     return _at(scores, best_k, "changepoint", {"gap": best_gap, "min_seg": CHANGEPOINT_MIN_SEG})
 
 
-def agent_first(scores: Sequence[StepScore], threshold: float) -> Attribution:
+def agent_first(scores: Sequence[StepScore], threshold: Threshold) -> Attribution:
     """Two-stage: select the agent whose *best* step is still worst, then run
     first-crossing inside that agent's steps.
 
@@ -117,7 +132,10 @@ def agent_first(scores: Sequence[StepScore], threshold: float) -> Attribution:
     selector = {a: max(p[i] for i in idxs) for a, idxs in by_agent.items()}
     worst = min(selector, key=lambda a: selector[a])
     idxs = by_agent[worst]
-    chosen = next((i for i in idxs if p[i] < threshold), min(idxs, key=lambda i: p[i]))
+    chosen = next(
+        (i for i in idxs if p[i] < _thr(threshold, scores[i].type_norm)),
+        min(idxs, key=lambda i: p[i]),
+    )
     return _at(
         scores,
         chosen,
@@ -141,7 +159,7 @@ PRIMARY = "first_crossing"
 
 
 def attribute(
-    scores_by_file: dict[str, list[StepScore]], *, threshold: float, method: str = PRIMARY
+    scores_by_file: dict[str, list[StepScore]], *, threshold: Threshold, method: str = PRIMARY
 ) -> dict[str, Attribution]:
     fn = METHODS[method]
     out = {}
@@ -229,4 +247,84 @@ def render_disagreement(rows: Sequence[DisagreementRow], title: str = "") -> str
             f"| {r.stratum} | {r.n} | {r.n_step} ({r.step_rate:.1%}) | "
             f"{r.n_agent} ({r.agent_rate:.1%}) |"
         )
+    return "\n".join(lines)
+
+
+# --- normalized position (the early-skew receipt, §4.4/§4.5) ----------------
+
+
+def normalized_position(step: int | None, n_steps: int) -> float | None:
+    """Where in the trajectory a step sits, on [0, 1]."""
+    if step is None or n_steps <= 1:
+        return None
+    return step / (n_steps - 1)
+
+
+def position_table(
+    preds: Mapping[str, Attribution],
+    gold: Mapping[str, tuple[str, int]],
+    lengths: Mapping[str, int],
+) -> dict[str, Any]:
+    """Predicted vs gold normalized position, per rule.
+
+    §4.4 reports the labels' early skew (normalized median ≈ 0.29–0.33) and §4.5
+    argues that skew punishes argmin's downstream bias. That argument is only
+    visible if the predictions' own position distribution is reported next to the
+    labels'.
+    """
+    import statistics
+
+    pred_pos, gold_pos, deltas = [], [], []
+    for key, att in preds.items():
+        n = lengths.get(key, 0)
+        gp = normalized_position(gold.get(key, (None, None))[1], n)
+        pp = normalized_position(att.step, n)
+        if gp is None or pp is None:
+            continue
+        gold_pos.append(gp)
+        pred_pos.append(pp)
+        deltas.append(pp - gp)
+
+    def summary(xs: list[float]) -> dict[str, float | None]:
+        if not xs:
+            return {"n": 0, "mean": None, "median": None}
+        return {
+            "n": len(xs),
+            "mean": round(statistics.fmean(xs), 4),
+            "median": round(statistics.median(xs), 4),
+        }
+
+    return {
+        "gold": summary(gold_pos),
+        "predicted": summary(pred_pos),
+        "delta_pred_minus_gold": summary(deltas),
+        "fraction_predicted_after_gold": (
+            round(sum(1 for d in deltas if d > 0) / len(deltas), 4) if deltas else None
+        ),
+    }
+
+
+def render_positions(rows: Mapping[str, dict], title: str = "") -> str:
+    lines = [
+        f"### Normalized position of the attributed step {title}".rstrip(),
+        "",
+        "| method | n | gold median | pred median | mean delta | predicted late |",
+        "|---|---|---|---|---|---|",
+    ]
+    def num(value: float | None, spec: str = ".3f") -> str:
+        return "—" if value is None else format(value, spec)
+
+    for method, r in rows.items():
+        g, pred, d = r["gold"], r["predicted"], r["delta_pred_minus_gold"]
+        late = r["fraction_predicted_after_gold"]
+        lines.append(
+            f"| {method} | {g['n']} | {num(g['median'])} | {num(pred['median'])} | "
+            f"{num(d['mean'], '+.3f')} | {num(late, '.1%')} |"
+        )
+    lines += [
+        "",
+        "> A rule biased toward downstream damage shows up here as a positive mean "
+        "delta and a high 'predicted late' fraction, against labels whose own "
+        "median sits early.",
+    ]
     return "\n".join(lines)

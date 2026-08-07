@@ -82,13 +82,29 @@ def paper1_scores(tmp_path_factory) -> Path:
     """
     path = tmp_path_factory.mktemp("paper1") / "scores.jsonl"
     rng = random.Random(0)
-    types = ["thought", "action", "observation", "answer"]
+    kinds = ["thought", "action"]
     with path.open("w") as fh:
         for i in range(3000):
             p = rng.random()
+            kind = kinds[i % 2]
             fh.write(
                 json.dumps(
-                    {"p_raw": p, "type": types[i % len(types)], "correct": rng.random() < p**2}
+                    {
+                        "step_id": f"s{i}",
+                        "arm": "decoupled",
+                        "model": "acting-model",
+                        "benchmark": "alfworld" if i % 3 else "hotpotqa",
+                        "step_kind": kind,
+                        "tau": {
+                            "info": kind == "action" and i % 4 == 1,
+                            "world_mod": kind == "action" and i % 4 != 1,
+                            "reversible": True,
+                            "cost": "low",
+                        },
+                        "p_raw": p,
+                        "judge_model": "hf:Qwen3.6-35B-A3B" if i % 10 else "hf:other-judge",
+                        "label_correct": rng.random() < p**2,
+                    }
                 )
                 + "\n"
             )

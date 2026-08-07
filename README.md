@@ -20,7 +20,7 @@ Module docstrings cite the section they implement. The port receipts are in
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/python -m pytest        # 84 tests, no data / GPU / network required
+.venv/bin/python -m pytest        # 136 tests, no data / GPU / network required
 ```
 
 Extras: `.[judge]` for the local-LM judge (torch + transformers), `.[openai]`
@@ -51,12 +51,12 @@ than silent:
 
 | policy | effect |
 |---|---|
-| `fail` (default) | refuses to load, naming the files — spec-literal |
-| `flag` | keeps them, flags them, dual-reports them; counts hold |
+| `flag` (default) | keeps them, flags them with a class distinct from the six `agent_step_mismatch` files, dual-reports them; counts hold |
+| `fail` | refuses to load, naming the files |
 | `drop` | excludes them; the 126/58 assert then fails |
 
-`fail` is the default because the resolution is a pre-registration decision, not
-a loader default.
+Part C §1 is amended accordingly: hard-fail on count mismatch, flag on
+record-level anomalies. The five file ids are logged in every run manifest.
 
 ## Running the manifest
 
@@ -103,11 +103,23 @@ file whose label cannot be read is not a datapoint.
 **Records are frozen.** A record is a loaded fact about a trajectory. Scores
 live in separate arrays keyed by `(file_id, step_idx)`; no stage edits a record.
 
-**Types are parsed where possible, classified only where necessary.** HC's
-compound role encodes the act, so HC types are read, not guessed — which is what
-makes HC the reference corpus for validating the AG rules. The rules never
-override a parsed type, and `masattr typecheck` exits non-zero below 90%
-agreement.
+**Typing is hierarchical, because the release says it has to be.** HC's compound
+role encodes the act, so HC types are read, not guessed — which makes HC the
+reference for validating the AG rules. Measured there, the rules split
+coordination / execute / final at **0.9935** but plan vs delegate at **0.4162**,
+below the 0.6934 majority-class baseline: in the Magentic-One idiom that
+distinction lives in the role, not the text. So the rules keep the coarse split
+and an LLM classifier takes only the plan/delegate sub-split
+(`masattr retype`), gated on HC and required to beat both 0.90 *and* the
+majority baseline before it may touch AG. Collapsing plan+delegate would have
+scored 0.994 by deleting the delegation-error prediction; tuning the rules on
+HC's ledger markers would license AG typing on HC's idiom, which is the
+circularity the gate exists to prevent.
+
+**Two family-disjointness constraints, checked in code.** The judge must be
+disjoint from any labeling judge, and the type-classifier must be disjoint from
+the judge — typing conditions the judge's evidence policy. `masattr retype`
+refuses a same-family splitter, and every manifest logs the resolved families.
 
 **Prefix sharing is structural.** The judge client's shared prefix only grows,
 so a `T`-step trajectory costs `O(T)` prefix tokens. HC reaches 130 steps; the
@@ -118,17 +130,29 @@ does not expose the shared-prefix path.
 the assigned subtask and *earlier* same-turn peers. A future step in the
 evidence would make the score non-causal and inflate attribution for free. The
 one deliberate exception is `--policy hindsight`, which is the E5 ceiling, not a
-method.
+method. The subtask pointer, peer corroboration, and prefix window are
+separately switchable, because §7(iv) ablates them separately.
+
+**Long logs truncate under a pre-registered policy, not under context pressure.**
+Type-aware retention: query, ground truth, and every plan/delegate step stay
+verbatim; the newest execute steps stay verbatim; over budget, the *oldest*
+execute steps are demoted to a one-line header — the row survives, the detail
+does not. On the real HC subset this fires on **24.1% of trajectories and 13.8%
+of assessments**, which is a limitations sentence, not a surprise, because
+`cost_summary` reports it every run.
 
 **One prompt scaffold, three readouts.** Logit P(True), verbalized number, and
 binary verdict share the preamble and the question; only the final instruction
 differs. That is what makes E2 an ablation rather than three methods.
 
 **Calibration is fit once, frozen, and hash-checked.** `FrozenCalibration.load`
-refuses a file whose `content_hash` no longer matches its contents. The
-first-crossing threshold is chosen on the *fitting* corpus and travels with the
-maps; `masattr e1` refuses to run without one rather than picking a threshold on
-the corpus it is scoring.
+refuses a file whose `content_hash` no longer matches its contents. Thresholds
+are fit **per type** — §5's "crosses *its* calibrated threshold" — with the
+pooled threshold as fallback and as E4's global-threshold arm. They are chosen
+on the *fitting* corpus and travel with the maps; `masattr e1` refuses to run
+without one rather than picking a threshold on the corpus it is scoring. The
+paper-1 τ → function-type table must be marked `"status": "frozen"` before E0
+will run.
 
 **E0 is a real falsifier.** It runs first, its gates are pre-registered in the
 module, and it exits **2** when transfer fails — a legitimate outcome that puts
@@ -154,8 +178,11 @@ the live prompts and type rules still match `specs/` before it starts.
   `correct = idx < mistake_step`, excluding the post-mistake tail rather than
   guessing it. The `point` policy keeps every step and asserts the tail is fine.
   Documented at the top of `calib/apply.py`; both are pre-registered.
-- **E0 needs paper 1's corpus scored by this judge** — a JSONL of
-  `{p_raw, type, correct}`. Without it `masattr e0` stops. It will not quietly
+- **E0 needs paper 1's corpus scored by this judge** — one JSONL row per judged
+  step: `{step_id, arm, model, benchmark, step_kind, tau{info, world_mod,
+  reversible, cost}, p_raw, judge_model, label_correct}`, where `p_raw` is the
+  raw single-probe P(True), never a combined score. Rows are filtered to the
+  transferring judge. Without it `masattr e0` stops; it will not quietly
   calibrate on Who&When, which is the very thing the fallback is meant to
   disclose.
 - **The paper-1 type map is data, not code.** It lives in

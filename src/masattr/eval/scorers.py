@@ -112,14 +112,25 @@ def score_pairs(
 
 
 def slices(records: Sequence[Record], held_aside: Iterable[str] = ()) -> dict[str, set[str]]:
-    """The pre-registered dual-reporting slices (Part E)."""
+    """The pre-registered dual-reporting slices (Part E).
+
+    Three exclusion axes, kept separate because they are different objections:
+    the 6 ``agent_step_mismatch`` files (the annotation names an agent that does
+    not act at the annotated step), the 5 record-level anomalies the release
+    contains (out-of-range ``mistake_step``, empty-content step), and the 20
+    held-aside files E0 checked transfer on.
+    """
     keys = {r.key for r in records}
     flagged = {r.key for r in records if FLAG_AGENT_STEP_MISMATCH in r.flags}
+    anomalous = {r.key for r in records if r.is_anomalous}
     held = set(held_aside) & keys
     out = {"all": keys, "excl_flagged": keys - flagged}
+    if anomalous:
+        out["excl_anomalous"] = keys - anomalous
     if held:
         out["excl_held_aside"] = keys - held
-        out["excl_both"] = keys - flagged - held
+    if anomalous or held:
+        out["excl_all_excluded"] = keys - flagged - anomalous - held
     return out
 
 

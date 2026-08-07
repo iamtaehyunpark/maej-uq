@@ -9,6 +9,7 @@ Manifest order (Part C §7)::
     masattr freeze                 # serialize prompts / type rules / type map + hashes
     masattr load --assert          # 126 AG / 58 HC / 4092 steps / 3+3 flagged
     masattr typecheck              # rules vs HC parsed types, ≥90% gate
+    masattr retype --splitter ...  # gate the plan/delegate splitter on HC, apply to AG
     masattr judge --subsets alg hc --judge hf:<id>      [× readout × policy × GT]
     masattr e0 --paper1-scores ... # falsifier; decides the calibration fallback
     masattr e1 --scores ...        # primary vs baselines

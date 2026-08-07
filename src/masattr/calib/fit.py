@@ -6,12 +6,25 @@ here and nowhere else, then frozen to ``calib/frozen/`` and applied unchanged to
 Who&When. Exp-0 tests the transfer before any attribution number is seen.
 
 **Input contract.** Fitting needs paper 1's ~30k step-labeled corpus *scored by
-this judge* — a JSONL of ``{"p_raw": float, "type": str, "correct": bool}``
-rows, where ``type`` is paper 1's action/thought type. Those types are mapped
-into the function-type space by the table in ``specs/paper1_type_map.json``,
-which is frozen before Exp-0 and hashed into the run manifest. The mapping is
-the one place single-agent and multi-agent vocabularies meet, so it is data, not
-code.
+this judge*, one JSONL row per judged step::
+
+    {"step_id": str, "arm": str, "model": str, "benchmark": "alfworld|hotpotqa",
+     "step_kind": "thought|action",
+     "tau": {"info": bool, "world_mod": bool, "reversible": bool, "cost": str},
+     "p_raw": float, "judge_model": str, "label_correct": bool}
+
+``p_raw`` must be the **raw single-probe** P(True) under the protocol arm
+matching ours — prefix-conditional, logit readout. Not a noisy-OR or otherwise
+combined score: calibrating a combined value makes every downstream map inherit
+the combiner, which is exactly the dependency this design is trying not to have.
+
+Rows are filtered to ``judge_model`` matching the transferring judge, so the
+maps describe the judge that will actually be applied to Who&When.
+
+``step_kind`` and ``tau`` are mapped into the function-type space by
+``specs/paper1_type_map.json`` — the one place single-agent and multi-agent
+vocabularies meet, so it is data, hashed into every manifest, not code. That
+table must be marked ``"status": "frozen"`` before E0 runs.
 
 Methods: ``percentile`` (default — monotone, non-parametric), ``platt``,
 ``isotonic``. The default is rank-preserving because a monotone map cannot be
@@ -36,20 +49,18 @@ METHODS = ("percentile", "platt", "isotonic")
 #: Types with fewer than this many fitting rows fall back to the pooled map.
 MIN_PER_TYPE_N = 200
 
-#: Default paper-1 → function-type mapping. Overridden by
-#: ``specs/paper1_type_map.json`` when present; that file is the frozen artifact.
-DEFAULT_TYPE_MAP: dict[str, str] = {
-    "thought": "plan",
-    "think": "plan",
-    "reason": "plan",
-    "plan": "plan",
-    "action": "execute",
-    "act": "execute",
-    "tool": "execute",
-    "observation": "execute",
-    "answer": "final",
-    "final": "final",
-    "finish": "final",
+#: Fallback rule table, used only when ``specs/paper1_type_map.json`` is absent.
+#: It is deliberately the spec's sketch and is marked draft, so a run without the
+#: frozen artifact cannot quietly proceed.
+DEFAULT_TYPE_MAP: dict[str, Any] = {
+    "status": "draft",
+    "rules": [
+        {"step_kind": "thought", "type": "plan"},
+        {"step_kind": "action", "tau": {"info": True}, "type": "execute"},
+        {"step_kind": "action", "tau": {"world_mod": True}, "type": "execute"},
+        {"step_kind": "action", "type": "execute"},
+    ],
+    "default": "unknown",
 }
 
 
@@ -175,6 +186,10 @@ class FrozenCalibration:
     maps: dict[str, Map] = field(default_factory=dict)
     pooled: Map | None = None
     threshold: float = 0.5
+    #: Per-type crossing thresholds. §5 says "crosses **its** calibrated
+    #: threshold", and E4's "type-normalized vs global threshold" arm is
+    #: unrunnable without these. ``threshold`` remains the global fallback.
+    thresholds: dict[str, float] = field(default_factory=dict)
     provenance: dict[str, Any] = field(default_factory=dict)
 
     def apply_one(self, p: float, type_norm: str) -> float:
@@ -186,10 +201,36 @@ class FrozenCalibration:
     def apply_many(self, ps: Sequence[float], types: Sequence[str]) -> list[float]:
         return [self.apply_one(p, t) for p, t in zip(ps, types)]
 
+    def threshold_for(self, type_norm: str, *, per_type: bool = True) -> float:
+        """Crossing threshold for a step of this type.
+
+        ``per_type=False`` is E4's global-threshold arm — same maps, one
+        threshold — so the two arms differ in exactly one thing.
+        """
+        if not per_type:
+            return self.threshold
+        return self.thresholds.get(type_norm, self.threshold)
+
+    def pooled_only(self) -> "FrozenCalibration":
+        """This calibration with typing switched off: pooled map, one threshold.
+
+        The calibration half of E4. Keeping it a derived view rather than a
+        second fit means the two arms cannot differ by anything else.
+        """
+        return FrozenCalibration(
+            method=self.method,
+            maps={},
+            pooled=self.pooled,
+            threshold=self.threshold,
+            thresholds={},
+            provenance={**self.provenance, "typing": "off (pooled map, global threshold)"},
+        )
+
     def to_dict(self) -> dict:
         return {
             "method": self.method,
             "threshold": self.threshold,
+            "thresholds": self.thresholds,
             "pooled": self.pooled.to_dict() if self.pooled else None,
             "maps": {k: v.to_dict() for k, v in self.maps.items()},
             "provenance": self.provenance,
@@ -212,7 +253,11 @@ class FrozenCalibration:
     @classmethod
     def load(cls, path: str | Path) -> "FrozenCalibration":
         d = json.loads(Path(path).read_text(encoding="utf-8"))
-        c = cls(method=d["method"], threshold=float(d.get("threshold", 0.5)))
+        c = cls(
+            method=d["method"],
+            threshold=float(d.get("threshold", 0.5)),
+            thresholds={k: float(v) for k, v in d.get("thresholds", {}).items()},
+        )
         c.pooled = Map.from_dict(d["pooled"]) if d.get("pooled") else None
         c.maps = {k: Map.from_dict(v) for k, v in d.get("maps", {}).items()}
         c.provenance = d.get("provenance", {})
@@ -228,42 +273,115 @@ class FrozenCalibration:
 # --- paper-1 corpus ---------------------------------------------------------
 
 
-def load_type_map(path: str | Path | None = None) -> dict[str, str]:
+def load_type_map(path: str | Path | None = None) -> dict[str, Any]:
+    """Load the paper-1 τ → function-type rule table."""
     if path and Path(path).exists():
-        blob = json.loads(Path(path).read_text(encoding="utf-8"))
-        return {str(k).lower(): str(v) for k, v in blob.items()}
+        return json.loads(Path(path).read_text(encoding="utf-8"))
     return dict(DEFAULT_TYPE_MAP)
 
 
-def load_paper1_scores(
-    path: str | Path, type_map: Mapping[str, str]
-) -> tuple[np.ndarray, list[str], np.ndarray, dict[str, int]]:
-    """Read the scored paper-1 corpus and map its types into function types.
+def map_step(step_kind: str, tau: Mapping[str, Any] | None, table: Mapping[str, Any]) -> str:
+    """Apply the rule table to one paper-1 step.
 
-    Unmapped source types become ``unknown`` and are counted rather than
-    dropped — a silently discarded slice of the fitting corpus would move every
+    Rules are ordered; the first whose ``step_kind`` matches (or is absent) and
+    whose every listed ``tau`` key equals the row's value wins.
+    """
+    kind = (step_kind or "").strip().lower()
+    tau = tau or {}
+    for rule in table.get("rules", []):
+        want_kind = rule.get("step_kind")
+        if want_kind is not None and str(want_kind).lower() != kind:
+            continue
+        if any(tau.get(k) != v for k, v in (rule.get("tau") or {}).items()):
+            continue
+        return str(rule["type"])
+    return str(table.get("default", "unknown"))
+
+
+def load_paper1_scores(
+    path: str | Path,
+    table: Mapping[str, Any],
+    *,
+    judge_model: str | None = None,
+    require_frozen: bool = True,
+) -> tuple[np.ndarray, list[str], np.ndarray, dict[str, Any]]:
+    """Read paper 1's scored corpus and map its steps into function types.
+
+    Returns ``(p_raw, types, label_correct, report)``. The report carries the
+    counts that would otherwise vanish: rows filtered out by judge model, rows
+    the table sent to ``unknown``, and the (step_kind, tau) combinations
+    responsible — a silently discarded slice of the fitting corpus moves every
     map without leaving a trace.
     """
-    ps, types, ys = [], [], []
+    if require_frozen and str(table.get("status", "draft")).lower() != "frozen":
+        raise CalibrationError(
+            "the paper-1 type map is still marked "
+            f"{table.get('status', 'draft')!r}. Part C §4 requires the mapping table "
+            "frozen before E0 — set \"status\": \"frozen\" in "
+            "specs/paper1_type_map.json once it has been reviewed against the corpus."
+        )
+
+    ps: list[float] = []
+    types: list[str] = []
+    ys: list[bool] = []
     unmapped: dict[str, int] = {}
+    seen_judges: dict[str, int] = {}
+    kept_benchmarks: dict[str, int] = {}
+    n_rows = n_filtered = 0
+
     with open(path, encoding="utf-8") as fh:
-        for line in fh:
+        for lineno, line in enumerate(fh, 1):
             if not line.strip():
                 continue
             row = json.loads(line)
-            raw = str(row.get("type", "")).strip().lower()
-            mapped = type_map.get(raw)
-            if mapped is None:
-                unmapped[raw] = unmapped.get(raw, 0) + 1
-                mapped = "unknown"
+            n_rows += 1
+            jm = str(row.get("judge_model", ""))
+            seen_judges[jm] = seen_judges.get(jm, 0) + 1
+            if judge_model and jm != judge_model:
+                n_filtered += 1
+                continue
+            for required in ("p_raw", "label_correct", "step_kind"):
+                if required not in row:
+                    raise CalibrationError(
+                        f"{path}:{lineno}: missing {required!r}; expected the E0 "
+                        "handoff schema (step_id, arm, model, benchmark, step_kind, "
+                        "tau, p_raw, judge_model, label_correct)"
+                    )
+            mapped = map_step(row["step_kind"], row.get("tau"), table)
             if mapped not in TYPE_NORMS:
-                raise CalibrationError(f"type map sends {raw!r} to unknown function type {mapped!r}")
+                raise CalibrationError(
+                    f"type map produced {mapped!r}, not one of {TYPE_NORMS}"
+                )
+            if mapped == "unknown":
+                key = f"{row['step_kind']}|{sorted((row.get('tau') or {}).items())}"
+                unmapped[key] = unmapped.get(key, 0) + 1
             ps.append(float(row["p_raw"]))
             types.append(mapped)
-            ys.append(bool(row["correct"]))
+            ys.append(bool(row["label_correct"]))
+            b = str(row.get("benchmark", "?"))
+            kept_benchmarks[b] = kept_benchmarks.get(b, 0) + 1
+
     if not ps:
-        raise CalibrationError(f"{path}: no rows")
-    return np.asarray(ps), types, np.asarray(ys, dtype=bool), unmapped
+        raise CalibrationError(
+            f"{path}: no rows left"
+            + (
+                f" after filtering to judge_model == {judge_model!r}; "
+                f"saw {sorted(seen_judges)}"
+                if judge_model
+                else ""
+            )
+        )
+    report = {
+        "n_rows_read": n_rows,
+        "n_rows_used": len(ps),
+        "n_filtered_by_judge_model": n_filtered,
+        "judge_model_filter": judge_model,
+        "judge_models_present": seen_judges,
+        "benchmarks_used": kept_benchmarks,
+        "unmapped_to_unknown": unmapped,
+        "type_map_status": table.get("status"),
+    }
+    return np.asarray(ps), types, np.asarray(ys, dtype=bool), report
 
 
 def choose_threshold(probs: Sequence[float], labels: Sequence[bool], objective: str = "f1") -> float:
@@ -317,7 +435,17 @@ def fit(
         if n >= MIN_PER_TYPE_N and 0 < int(ys[mask].sum()) < n:
             cal.maps[t] = fitter(ps[mask], ys[mask])
 
-    cal.threshold = choose_threshold(cal.apply_many(ps.tolist(), list(types)), ys)
+    calibrated = cal.apply_many(ps.tolist(), list(types))
+    cal.threshold = choose_threshold(calibrated, ys)
+    # Per-type thresholds where there is enough of that type to pick one; types
+    # without their own map do not get their own threshold either.
+    ty = np.asarray(list(types))
+    for t in cal.maps:
+        mask = ty == t
+        if int(mask.sum()) >= MIN_PER_TYPE_N:
+            cal.thresholds[t] = choose_threshold(
+                [c for c, keep in zip(calibrated, mask) if keep], ys[mask]
+            )
     cal.provenance = {
         "method": method,
         "fit_on": fit_on,

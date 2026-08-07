@@ -13,6 +13,7 @@ from . import (
     e9_uniformity,
     judge,
     load,
+    retype,
     typecheck,
 )
 
@@ -21,6 +22,7 @@ from . import (
 ORDER = (
     "load",
     "typecheck",
+    "retype",
     "judge",
     "e0",
     "e1",
@@ -36,6 +38,7 @@ ORDER = (
 COMMANDS = {
     "load": load,
     "typecheck": typecheck,
+    "retype": retype,
     "judge": judge,
     "baselines": baselines,
     "e0": e0_transfer,

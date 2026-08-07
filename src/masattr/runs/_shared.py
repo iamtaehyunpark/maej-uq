@@ -18,7 +18,7 @@ from ..calib.fit import FrozenCalibration
 from ..calib.apply import apply_to, held_aside
 from ..eval.scorers import gold_map, score_all
 from ..judge.client import build_client
-from ..judge.score import StepScore, by_file, load_scores, score_corpus
+from ..judge.score import PREFIX_BUDGET_CHARS, StepScore, by_file, load_scores, score_corpus
 from ..loaders.whowhen_ag import load as load_alg
 from ..loaders.whowhen_hc import load as load_hc
 from ..manifest import Manifest, start
@@ -38,11 +38,11 @@ def add_common(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
     p.add_argument("--out-dir", default="runs/out")
     p.add_argument(
         "--anomaly-policy",
-        default="fail",
+        default="flag",
         choices=("fail", "flag", "drop"),
-        help="what to do with the 5 released files that violate Part C §1's own "
-        "asserts: fail (spec-literal, will not load), flag (keep + dual-report), "
-        "drop (exclude, breaks the 126/58 count assert)",
+        help="what to do with the 5 released files that violate Part C §1's per-step "
+        "asserts: flag (default — keep, flag, dual-report; counts hold), fail "
+        "(refuse to load), drop (exclude, breaks the 126/58 count assert)",
     )
     p.add_argument(
         "--no-verify-specs",
@@ -59,6 +59,27 @@ def add_judge_args(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
     p.add_argument("--policy", default="typed", choices=("typed", "plain", "hindsight"))
     p.add_argument("--with-gt", action="store_true", help="append the reference answer (both settings run for primary tables)")
     p.add_argument("--no-types", action="store_true", help="typing-off arm of E4")
+    p.add_argument(
+        "--no-subtask-pointer",
+        action="store_true",
+        help="E5 arm: withhold the assigned-subtask pointer from terse execute steps",
+    )
+    p.add_argument(
+        "--no-peer-corroboration",
+        action="store_true",
+        help="E5 arm: withhold same-turn peer steps (direction decision §10(c))",
+    )
+    p.add_argument(
+        "--prefix-window",
+        type=int,
+        help="E5 prefix-slice arm: judge step t against only the last N steps",
+    )
+    p.add_argument(
+        "--prefix-budget-chars",
+        type=int,
+        default=PREFIX_BUDGET_CHARS,
+        help="pre-registered truncation budget; over it, old execute detail is demoted",
+    )
     return p
 
 
@@ -117,6 +138,10 @@ def score(
         policy=policy if policy is not None else args.policy,
         with_gt=with_gt if with_gt is not None else args.with_gt,
         use_types=(use_types if use_types is not None else not args.no_types),
+        subtask_pointer=not getattr(args, "no_subtask_pointer", False),
+        peer_corroboration=not getattr(args, "no_peer_corroboration", False),
+        prefix_window=getattr(args, "prefix_window", None),
+        budget_chars=getattr(args, "prefix_budget_chars", PREFIX_BUDGET_CHARS),
         out_path=out_path,
     )
     return by_file([s for ts in results for s in ts.scores])
@@ -132,7 +157,17 @@ def read_scores(path: str | Path, cal: FrozenCalibration | None = None) -> dict[
 
 #: The axes a score row records about how it was produced. Grouping on these is
 #: what makes every ablation the same code with different inputs.
-CONFIG_AXES = ("subset", "judge", "readout", "policy", "with_gt", "use_types")
+CONFIG_AXES = (
+    "subset",
+    "judge",
+    "readout",
+    "policy",
+    "with_gt",
+    "use_types",
+    "subtask_pointer",
+    "peer_corroboration",
+    "prefix_window",
+)
 
 
 def config_of(row: StepScore) -> tuple:
@@ -219,7 +254,7 @@ def run_config_tables(
     args: argparse.Namespace,
     name: str,
     *,
-    expect_axis: str | None = None,
+    expect_axis: str | Sequence[str] | None = None,
     methods: Iterable[str] = tuple(METHODS),
 ) -> int:
     """The body every attribution experiment shares.
@@ -230,7 +265,14 @@ def run_config_tables(
     vary; if the inputs do not actually vary it, the run stops rather than
     reporting a one-row "ablation".
     """
-    from ..attribute.rules import disagreement, render_disagreement, role_strata, type_strata
+    from ..attribute.rules import (
+        disagreement,
+        position_table,
+        render_disagreement,
+        render_positions,
+        role_strata,
+        type_strata,
+    )
     from ..eval.scorers import render
 
     manifest = open_manifest(name, args)
@@ -238,24 +280,32 @@ def run_config_tables(
     by_key = {r.key: r for r in records}
 
     cal = FrozenCalibration.load(args.calibration) if getattr(args, "calibration", None) else None
+    if cal and getattr(args, "pooled_calibration", False):
+        cal = cal.pooled_only()
     if cal:
         manifest.calibration_hash = cal.content_hash()
     threshold = resolve_threshold(args, cal)
+    manifest.record_anomalies(records)
 
     configs = read_configs(args.scores, cal)
     if not configs:
         raise SystemExit(f"no score rows found in {args.scores}")
     varied = varied_axes(configs)
-    if expect_axis and expect_axis not in varied:
+    wanted = (expect_axis,) if isinstance(expect_axis, str) else tuple(expect_axis or ())
+    if wanted and not (set(wanted) & set(varied)):
+        listed = wanted[0] if len(wanted) == 1 else " / ".join(wanted)
         raise SystemExit(
-            f"{name} varies '{expect_axis}', but every score file has the same "
-            f"{expect_axis}. Score under both settings first; a one-row ablation "
-            f"is not an ablation. (varied axes here: {varied or 'none'})"
+            f"{name} varies {listed}, but every score file has the same value. "
+            "Score under both settings first; a one-row ablation is not an "
+            f"ablation. (varied axes here: {varied or 'none'})"
         )
 
+    lengths = {r.key: r.n_steps for r in records}
     held = held_aside_keys(records, args.seed)
     results: dict[str, Any] = {
         "threshold": threshold,
+        "typed_thresholds": isinstance(threshold, dict),
+        "pooled_calibration": bool(getattr(args, "pooled_calibration", False)),
         "calibrated": bool(cal),
         "calibration_hash": manifest.calibration_hash,
         "held_aside": sorted(held),
@@ -286,8 +336,13 @@ def run_config_tables(
             if subset == "hc"
             else []
         )
+        positions = {
+            m: position_table(p, gold_map(subset_records), lengths)
+            for m, p in preds.items()
+        }
         label = config_label(cfg)
         results["configs"][label] = {
+            "positions": positions,
             "scores": table,
             "n_files": len(scores),
             "disagreement_by_type": [r.to_dict() for r in dis_type],
@@ -296,7 +351,13 @@ def run_config_tables(
                 m: {k: a.to_dict() for k, a in p.items()} for m, p in preds.items()
             },
         }
-        block = [render(table, f"— {label}"), "", render_disagreement(dis_type, "(by step type)")]
+        block = [
+            render(table, f"— {label}"),
+            "",
+            render_positions(positions),
+            "",
+            render_disagreement(dis_type, "(by step type)"),
+        ]
         if dis_role:
             block += ["", render_disagreement(dis_role, "(orchestrator vs worker)")]
         blocks.append("\n".join(block))
@@ -306,18 +367,27 @@ def run_config_tables(
     return 0
 
 
-def resolve_threshold(args: argparse.Namespace, cal: FrozenCalibration | None) -> float:
-    """The first-crossing threshold, which must come from the calibration corpus.
+def resolve_threshold(args: argparse.Namespace, cal: FrozenCalibration | None):
+    """The crossing threshold, which must come from the calibration corpus.
 
     Picking it on Who&When would leak: it is the one free parameter of the
     primary rule, and the corpus it is tuned on is the corpus being scored.
+
+    Returns a per-type mapping when the calibration carries one (§5's "crosses
+    *its* calibrated threshold"), or a bare float under ``--global-threshold``,
+    which is E4's global-threshold arm.
     """
     if getattr(args, "threshold", None) is not None:
         return float(args.threshold)
     if getattr(args, "threshold_file", None):
-        return float(json.loads(Path(args.threshold_file).read_text())["threshold"])
+        blob = json.loads(Path(args.threshold_file).read_text())
+        if not getattr(args, "global_threshold", False) and blob.get("thresholds"):
+            return {**blob["thresholds"], "": float(blob["threshold"])}
+        return float(blob["threshold"])
     if cal is not None:
-        return cal.threshold
+        if getattr(args, "global_threshold", False) or not cal.thresholds:
+            return cal.threshold
+        return {**cal.thresholds, "": cal.threshold}
     raise SystemExit(
         "no threshold: pass --calibration (E0's frozen map carries one), "
         "--threshold-file, or an explicit --threshold. Choosing it on Who&When "
@@ -330,6 +400,16 @@ def add_attribution_args(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
     p.add_argument("--calibration", help="frozen calibration JSON from E0")
     p.add_argument("--threshold", type=float)
     p.add_argument("--threshold-file", help="threshold.json written by E0")
+    p.add_argument(
+        "--pooled-calibration",
+        action="store_true",
+        help="E4 arm: apply the pooled map instead of the per-type maps",
+    )
+    p.add_argument(
+        "--global-threshold",
+        action="store_true",
+        help="E4 arm: one crossing threshold for every type",
+    )
     return p
 
 

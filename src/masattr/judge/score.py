@@ -31,6 +31,26 @@ from .prompts import preamble, readout, render_step
 POLICIES = ("typed", "plain", "hindsight")
 MAX_POINTER_CHARS = 800
 
+#: Pre-registered prefix budget, in characters. Measured in characters rather
+#: than tokens because this module is model-agnostic; at the usual ~4 chars per
+#: token this sits comfortably under ``HFClient.max_prefix_tokens``, which
+#: enforces the real cap. HC's 130-step logs reach ~38k estimated tokens, so a
+#: truncation policy is pre-registered rather than left to context capacity.
+PREFIX_BUDGET_CHARS = 90_000
+
+#: How much of a demoted execute step survives, after its header line.
+HEADER_CHARS = 120
+
+#: Rebuilds target this fraction of the budget, not the budget itself. Rebuilding
+#: to exactly the budget leaves no headroom, so the very next step breaches it
+#: again and the trajectory rebuilds every step — measured at 104 rebuilds across
+#: 14 HC trajectories before this was added.
+RETAIN_TARGET = 0.8
+
+#: Rebuild count above which the log complains. The budget is still enforced past
+#: it: exceeding the prefix cap silently is worse than an expensive trajectory.
+REBUILD_WARN_AT = 8
+
 _NUM = re.compile(r"(\d+(?:\.\d+)?)\s*%?")
 
 
@@ -52,6 +72,10 @@ class StepScore:
     policy: str = "typed"
     with_gt: bool = False
     use_types: bool = True
+    subtask_pointer: bool = True
+    peer_corroboration: bool = True
+    prefix_window: int = 0
+    n_demoted: int = 0
     prefix_tokens: int = 0
     readout_tokens: int = 0
     seconds: float = 0.0
@@ -80,6 +104,8 @@ class TrajectoryScores:
     seconds: float = 0.0
     prefix_tokens: int = 0
     readout_tokens: int = 0
+    rebuilds: int = 0
+    demoted_steps: list[int] = field(default_factory=list)
 
 
 # --- evidence ---------------------------------------------------------------
@@ -105,8 +131,19 @@ def is_near_empty(step: Step) -> bool:
     return len((step.content or "").strip()) < NEAR_EMPTY_CHARS
 
 
-def pointers(record: Record, t: int, blocks: Sequence[int]) -> list[str]:
+def pointers(
+    record: Record,
+    t: int,
+    blocks: Sequence[int],
+    *,
+    subtask: bool = True,
+    peers: bool = True,
+) -> list[str]:
     """Assigned subtask + earlier same-turn peers for a terse ``execute`` step.
+
+    The two are separately switchable because §7(iv) ablates them separately:
+    "does peer corroboration earn its place" is a pending direction decision,
+    and it cannot be answered if the subtask pointer moves at the same time.
 
     Strictly backward-looking. Letting a later step in would make the score
     non-causal and inflate attribution accuracy for free.
@@ -114,30 +151,88 @@ def pointers(record: Record, t: int, blocks: Sequence[int]) -> list[str]:
     steps = record.steps
     target = steps[t]
     out: list[str] = []
-    pat = re.compile(rf"\b{re.escape(target.agent)}\b", re.IGNORECASE)
-    for j in range(t - 1, -1, -1):
-        s = steps[j]
-        if s.type_norm not in ("plan", "delegate"):
-            continue
-        if pat.search(s.content) or pat.search(s.role_raw) or (j == t - 1 and s.type_norm == "delegate"):
-            out.append(f"assigned subtask for {target.agent}:\n{s.content.strip()[:MAX_POINTER_CHARS]}")
-            break
-    peers = [
-        s
-        for j, s in enumerate(steps[:t])
-        if blocks[j] == blocks[t] and s.agent != target.agent and s.content.strip()
-    ]
-    for peer in peers[-2:]:
-        out.append(
-            f"peer step {peer.idx} ({peer.agent}, {peer.type_norm}):\n"
-            f"{peer.content.strip()[:MAX_POINTER_CHARS]}"
-        )
+    if subtask:
+        pat = re.compile(rf"\b{re.escape(target.agent)}\b", re.IGNORECASE)
+        for j in range(t - 1, -1, -1):
+            s = steps[j]
+            if s.type_norm not in ("plan", "delegate"):
+                continue
+            if pat.search(s.content) or pat.search(s.role_raw) or (
+                j == t - 1 and s.type_norm == "delegate"
+            ):
+                out.append(
+                    f"assigned subtask for {target.agent}:\n"
+                    f"{s.content.strip()[:MAX_POINTER_CHARS]}"
+                )
+                break
+    if peers:
+        same_turn = [
+            s
+            for j, s in enumerate(steps[:t])
+            if blocks[j] == blocks[t] and s.agent != target.agent and s.content.strip()
+        ]
+        for peer in same_turn[-2:]:
+            out.append(
+                f"peer step {peer.idx} ({peer.agent}, {peer.type_norm}):\n"
+                f"{peer.content.strip()[:MAX_POINTER_CHARS]}"
+            )
     return out
 
 
 def untyped(steps: Sequence[Step]) -> tuple[Step, ...]:
     """Strip act types — the 'typing off' arm of E4."""
     return tuple(s.typed("unknown", s.type_source) for s in steps)
+
+
+# --- truncation: type-aware retention ---------------------------------------
+
+
+def step_header(step: Step) -> str:
+    """A demoted step: its row survives, its detail does not."""
+    body = (step.content or "").strip().replace("\n", " ")[:HEADER_CHARS]
+    elided = max(len(step.content or "") - HEADER_CHARS, 0)
+    return (
+        f"[step {step.idx} | agent={step.agent} | type={step.type_norm}]\n"
+        f"{body}… [{elided} chars withheld — old execution detail]\n"
+    )
+
+
+def retained_render(head: str, steps: Sequence[Step], budget: int) -> tuple[str, list[int]]:
+    """Render ``steps`` under the pre-registered retention policy.
+
+    Always kept verbatim: the task header (and, in the with-GT setting, the
+    reference answer), and every ``plan``/``delegate`` step — they are
+    structural, short, and carry the delegation errors the paper is about.
+    Execute and final steps are kept verbatim newest-first while budget allows;
+    the rest are demoted to a header line.
+
+    Prefix-only asymmetry is untouched: nothing here reaches past ``steps``.
+    What degrades is *old execution detail*, which is the defensible thing to
+    degrade.
+    """
+    coordination = [s for s in steps if s.type_norm in ("plan", "delegate")]
+    other = [s for s in steps if s.type_norm not in ("plan", "delegate")]
+
+    # Start from the floor — every structural step verbatim, every execution
+    # step demoted — then spend what is left upgrading executions back to full,
+    # newest first. Budgeting this way round is what makes the bound hold: the
+    # header lines are charged before anything is kept verbatim, so a long
+    # trajectory cannot blow the budget on headers it never accounted for.
+    rendered: dict[int, str] = {s.idx: render_step(s) for s in coordination}
+    rendered.update({s.idx: step_header(s) for s in other})
+    used = len(head) + sum(len(v) for v in rendered.values())
+    demoted = {s.idx for s in other}
+
+    for s in reversed(other):  # newest execution first
+        full = render_step(s)
+        upgrade = len(full) - len(rendered[s.idx])
+        if used + upgrade > budget:
+            continue
+        rendered[s.idx] = full
+        used += upgrade
+        demoted.discard(s.idx)
+
+    return head + "".join(rendered[s.idx] for s in steps), sorted(demoted)
 
 
 # --- scoring ----------------------------------------------------------------
@@ -151,8 +246,18 @@ def score_record(
     policy: str = "typed",
     with_gt: bool = False,
     use_types: bool = True,
+    subtask_pointer: bool = True,
+    peer_corroboration: bool = True,
+    prefix_window: int | None = None,
+    budget_chars: int = PREFIX_BUDGET_CHARS,
 ) -> TrajectoryScores:
-    """Score every step of one trajectory against a shared, growing prefix."""
+    """Score every step of one trajectory against a shared, growing prefix.
+
+    ``prefix_window`` is the prefix-slice arm of §7(iv): when set, step ``t`` is
+    judged against only the last ``prefix_window`` steps rather than all of
+    ``0..t``. It forces a rebuild per step, so it is an ablation, not a mode to
+    run the primary numbers in.
+    """
     if policy not in POLICIES:
         raise ValueError(f"unknown policy {policy!r}; known: {POLICIES}")
     if not client.prefix_sharing:
@@ -167,21 +272,54 @@ def score_record(
 
     out = TrajectoryScores(key=record.key)
     t0 = time.perf_counter()
+    used = 0
+    demoted: list[int] = []
 
     if policy == "hindsight":
         # One fixed prefix carrying the whole trajectory; each readout still
         # costs only its own tokens, so the ceiling stays O(T) to compute.
-        client.reset(head + "".join(render_step(s) for s in steps))
+        text, demoted = retained_render(head, steps, budget_chars)
+        client.reset(text)
+        out.rebuilds = int(bool(demoted))
 
     for t, step in enumerate(steps):
         if policy != "hindsight":
-            if t == 0:
-                client.reset(head)
-            client.extend(render_step(step))
+            window = steps[max(0, t + 1 - prefix_window) : t + 1] if prefix_window else None
+            if window is not None:
+                # Prefix slice: the visible history changes shape every step, so
+                # the shared prefix cannot be reused.
+                text, demoted = retained_render(head, window, budget_chars)
+                client.reset(text)
+                used = len(text)
+            else:
+                if t == 0:
+                    client.reset(head)
+                    used = len(head)
+                rendered = render_step(step)
+                if used + len(rendered) > budget_chars:
+                    # Over budget: rebuild the shared prefix with old execution
+                    # detail demoted, leaving headroom so the next step does not
+                    # immediately breach again.
+                    text, demoted = retained_render(
+                        head, steps[: t + 1], int(budget_chars * RETAIN_TARGET)
+                    )
+                    client.reset(text)
+                    used = len(text)
+                    out.rebuilds += 1
+                    out.demoted_steps = list(demoted)
+                else:
+                    client.extend(rendered)
+                    used += len(rendered)
 
         augment = ""
         if policy == "typed" and step.type_norm == "execute" and is_near_empty(step):
-            ptrs = pointers(record.with_steps(steps), t, blocks)
+            ptrs = pointers(
+                record.with_steps(steps),
+                t,
+                blocks,
+                subtask=subtask_pointer,
+                peers=peer_corroboration,
+            )
             if ptrs:
                 augment = (
                     "\n[context for a terse step — within-trajectory only]\n"
@@ -212,6 +350,10 @@ def score_record(
                 policy=policy,
                 with_gt=with_gt,
                 use_types=use_types,
+                subtask_pointer=subtask_pointer,
+                peer_corroboration=peer_corroboration,
+                prefix_window=prefix_window or 0,
+                n_demoted=len(demoted),
                 prefix_tokens=trace.prefix_tokens,
                 readout_tokens=trace.readout_tokens,
                 seconds=trace.seconds,
@@ -257,6 +399,10 @@ def score_corpus(
     policy: str = "typed",
     with_gt: bool = False,
     use_types: bool = True,
+    subtask_pointer: bool = True,
+    peer_corroboration: bool = True,
+    prefix_window: int | None = None,
+    budget_chars: int = PREFIX_BUDGET_CHARS,
     out_path: str | Path | None = None,
     progress: Callable[[int, int, TrajectoryScores], None] | None = None,
 ) -> list[TrajectoryScores]:
@@ -265,7 +411,16 @@ def score_corpus(
     try:
         for i, rec in enumerate(records):
             ts = score_record(
-                rec, client, kind=kind, policy=policy, with_gt=with_gt, use_types=use_types
+                rec,
+                client,
+                kind=kind,
+                policy=policy,
+                with_gt=with_gt,
+                use_types=use_types,
+                subtask_pointer=subtask_pointer,
+                peer_corroboration=peer_corroboration,
+                prefix_window=prefix_window,
+                budget_chars=budget_chars,
             )
             results.append(ts)
             if fh:
@@ -300,6 +455,19 @@ def cost_summary(results: Iterable[TrajectoryScores]) -> dict[str, Any]:
         "quadratic_prefix_tokens_avoided": sum(
             r.prefix_tokens * max(len(r.scores) - 1, 0) // 2 for r in results
         ),
+        # Truncation is pre-registered, so its extent is reported, not discovered.
+        "prefix_rebuilds": sum(r.rebuilds for r in results),
+        "trajectories_truncated": sum(1 for r in results if r.rebuilds),
+        "fraction_trajectories_truncated": round(
+            sum(1 for r in results if r.rebuilds) / len(results), 4
+        ),
+        "assessments_with_demoted_steps": sum(
+            1 for r in results for s in r.scores if s.n_demoted
+        ),
+        "fraction_assessments_truncated": round(
+            sum(1 for r in results for s in r.scores if s.n_demoted) / max(sum(steps), 1), 4
+        ),
+        "max_demoted_steps": max((s.n_demoted for r in results for s in r.scores), default=0),
     }
 
 

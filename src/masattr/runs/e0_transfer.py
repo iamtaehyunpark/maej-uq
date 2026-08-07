@@ -37,7 +37,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--paper1-scores",
         required=True,
-        help="JSONL of {p_raw, type, correct} — paper 1's step-labeled corpus scored by this judge",
+        help="JSONL from paper 1: {step_id, arm, model, benchmark, step_kind, tau, "
+        "p_raw, judge_model, label_correct} — raw single-probe P(True), not a "
+        "combined score",
+    )
+    p.add_argument(
+        "--judge-model",
+        help="keep only rows whose judge_model matches, so the maps describe the "
+        "judge that will actually be applied to Who&When",
+    )
+    p.add_argument(
+        "--allow-draft-type-map",
+        action="store_true",
+        help="run against an unfrozen specs/paper1_type_map.json (exploration only)",
     )
     p.add_argument("--scores", nargs="+", required=True, help="Who&When step-score JSONL(s)")
     p.add_argument("--method", default="percentile", choices=("percentile", "platt", "isotonic"))
@@ -57,7 +69,17 @@ def main(argv=None) -> int:
     manifest = open_manifest("e0_transfer", args)
 
     type_map = load_type_map(TYPE_MAP_FILE)
-    ps, types, ys, unmapped = load_paper1_scores(args.paper1_scores, type_map)
+    ps, types, ys, intake = load_paper1_scores(
+        args.paper1_scores,
+        type_map,
+        judge_model=args.judge_model,
+        require_frozen=not args.allow_draft_type_map,
+    )
+    if args.allow_draft_type_map:
+        manifest.note(
+            "type map was NOT frozen for this run — exploratory only, not an E0 result"
+        )
+    manifest.record_models(judge=args.judge_model or "", type_classifier="")
     cal = fit(
         ps,
         types,
@@ -65,7 +87,7 @@ def main(argv=None) -> int:
         method=args.method,
         fit_on=str(args.paper1_scores),
         type_map_hash=manifest.spec_hashes.get("paper1_type_map", ""),
-        extra={"unmapped_source_types": unmapped},
+        extra={"intake": intake},
     )
     frozen_path = cal.save(args.frozen_out)
     manifest.calibration_hash = cal.content_hash()
@@ -75,6 +97,7 @@ def main(argv=None) -> int:
     for path in args.scores:
         scores.update(read_scores(path))
 
+    manifest.record_anomalies(records)
     held = held_aside(records, seed=args.seed, per_subset=args.held_aside_per_subset)
     if args.held_aside_per_subset != HELD_ASIDE_PER_SUBSET:
         manifest.note(
@@ -99,7 +122,7 @@ def main(argv=None) -> int:
     results = {
         "fit_on": str(args.paper1_scores),
         "n_fit": int(ps.size),
-        "unmapped_source_types": unmapped,
+        "intake": intake,
         "held_aside_files": sorted(held),
         "held_aside_per_subset": args.held_aside_per_subset,
         "label_policy": args.label_policy,
@@ -154,7 +177,14 @@ def main(argv=None) -> int:
 
     emit(manifest, results, md, args.out_dir)
     Path(args.out_dir, "threshold.json").write_text(
-        json.dumps({"threshold": cal.threshold, "chosen_on": str(args.paper1_scores)}, indent=2),
+        json.dumps(
+            {
+                "threshold": cal.threshold,
+                "thresholds": cal.thresholds,
+                "chosen_on": str(args.paper1_scores),
+            },
+            indent=2,
+        ),
         encoding="utf-8",
     )
     return 0 if transfers else 2  # 2 = falsified; the fallback is now in force

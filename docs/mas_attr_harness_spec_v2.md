@@ -97,8 +97,19 @@ The port source is paper 1's harness. Diet rules, in order:
   "flags": ["agent_step_mismatch", ...]   // 3 AG + 3 HC known files
 }
 ```
-Loader asserts: 126 AG files / 58 HC files / 4092 total steps; every step
-has content; mistake_step within trajectory bounds.
+Loader asserts (**amended 2026-08-07, after the release was loaded**):
+hard-fail on **count** mismatch — 126 AG files / 58 HC files / 4092 total
+steps; **flag** on record-level anomalies — a step with empty content, or a
+`mistake_step` outside trajectory bounds.
+
+Reason for the amendment: the release violates the original per-step asserts
+for five files (3 HC with `mistake_step` past the trajectory end —
+51 of 28, 8 of 5, 24 of 19 — and 2 AG with an empty-content step) while
+simultaneously requiring the 126/58 counts. Both could not hold. Anomalous
+records are therefore loaded, flagged with a class distinct from the six
+`agent_step_mismatch` files, dual-reported with and without, and their file
+ids logged in the run manifest. `--anomaly-policy {flag,fail,drop}` selects
+the behaviour; `flag` is the pre-registered default.
 
 ### 2. Typing layer
 - HC (parsed): `Orchestrator (thought)`→plan; `Orchestrator (-> X)`→delegate
@@ -111,6 +122,19 @@ has content; mistake_step within trajectory bounds.
 - Validation gate (before any use on AG): run rules on HC where parsed
   types are known; confusion matrix; ≥90% agreement required. The confusion
   matrix is a reportable table.
+- **Measured 2026-08-07 (2935 HC parsed steps): rules score 0.547 overall.**
+  The confusion is not diffuse — coordination / execute / final splits at
+  0.9935, while plan vs delegate inside coordination splits at 0.4162,
+  *below* the 0.6934 majority-class baseline. In the Magentic-One idiom that
+  distinction lives in the role, not the text.
+- **Resolution — hierarchical typing.** Rules keep the coarse split; an LLM
+  classifier takes only the plan/delegate sub-split within coordination
+  (~76% of HC parsed steps). Collapsing plan+delegate was rejected: it buys
+  0.994 by deleting the delegation-error prediction (§5) and the
+  orchestrator/worker analysis. Tuning the rules on HC ledger markers was
+  rejected as circular — tuning on HC's idiom to license AG. The splitter is
+  itself gated on HC, and must beat both 0.90 and the majority-class
+  baseline before it may touch AG.
 
 ### 3. Judge
 - Prefix-conditional: evidence(t) = query + ordered typed steps 0..t
@@ -126,11 +150,32 @@ has content; mistake_step within trajectory bounds.
   reproduction, not for our field.
 - Cost logging: tokens + wall-clock per trajectory (HC reaches 130 steps —
   KV prefix sharing mandatory; assert the shared-prefix path is active).
+- **Truncation policy (pre-registered 2026-08-07).** HC's longest trajectory
+  reaches ~38k estimated tokens of prefix, so capacity is not relied on.
+  Type-aware retention: always keep the query, the ground truth (with-GT
+  setting), and every plan/delegate step verbatim — they are structural and
+  short; keep the most recent execute steps verbatim; when over budget,
+  demote the *oldest* execute steps to a one-line header (agent + type +
+  first 120 chars), never dropping the step row. Prefix-only asymmetry is
+  preserved; what degrades is old execution detail. Truncation events are
+  logged per assessment and the truncated fraction reported; a material
+  fraction on HC becomes a limitations sentence.
 
 ### 4. Calibration
 - Fit per-type score→probability maps ONCE on paper 1's ~30k step-labeled
   single-agent corpus (mapping paper-1 action/thought steps into the
   function-type space: rule table in specs/, frozen before Exp-0).
+- **Handoff schema (fixed 2026-08-07)**: one JSONL row per judged step —
+  `{step_id, arm, model, benchmark, step_kind, tau{info, world_mod,
+  reversible, cost}, p_raw, judge_model, label_correct}`. `p_raw` is the raw
+  single-probe P(True) under the arm matching ours, never a combined score.
+  Rows are filtered to `judge_model` == the transferring judge. The
+  step_kind×tau → function-type table lives in
+  `specs/paper1_type_map.json` and must be marked `"status": "frozen"`
+  before E0 runs; the loader refuses a draft.
+- **Per-type thresholds**: the crossing threshold is fit per type alongside
+  the maps (§5's "crosses *its* calibrated threshold"), with the pooled
+  threshold as fallback and as E4's global-threshold arm.
 - Freeze to calib/frozen/. Apply unchanged to Who&When.
 - **Exp-0 (run first, pre-registered)**: single-agent→MAS transfer check —
   reliability diagrams on a 20-file held-aside slice (10 AG + 10 HC, chosen

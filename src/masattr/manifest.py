@@ -41,6 +41,11 @@ class Manifest:
     commit: str = field(default_factory=git_commit)
     spec_hashes: dict[str, str] = field(default_factory=specs.hashes)
     calibration_hash: str = ""
+    #: {role: model family}, so the Part C §Validity disjointness constraints are
+    #: auditable from the manifest rather than promised in prose.
+    model_families: dict[str, str] = field(default_factory=dict)
+    #: File ids of the released records that violate Part C §1's per-step asserts.
+    anomalous_files: dict[str, list[str]] = field(default_factory=dict)
     python: str = field(default_factory=lambda: sys.version.split()[0])
     platform: str = field(default_factory=platform.platform)
     results: dict[str, Any] = field(default_factory=dict)
@@ -48,6 +53,25 @@ class Manifest:
 
     def note(self, msg: str) -> None:
         self.notes.append(msg)
+
+    def record_models(self, **roles: str) -> None:
+        """Log each role's model family and check the pairs that must be disjoint."""
+        from .models import check_disjoint, families
+
+        self.model_families = {**self.model_families, **families(**roles)}
+        for a, b in (("type_classifier", "judge"), ("judge", "labeling_judge")):
+            if roles.get(a) and roles.get(b):
+                problem = check_disjoint(a, roles[a], b, roles[b], strict=False)
+                if problem:
+                    self.note(f"VALIDITY: {problem}")
+
+    def record_anomalies(self, records) -> None:
+        """Log the file ids carrying record-level anomalies, per subset."""
+        out: dict[str, list[str]] = {}
+        for r in records:
+            if r.is_anomalous:
+                out.setdefault(r.subset, []).append(r.file_id)
+        self.anomalous_files = {k: sorted(v) for k, v in out.items()}
 
     def write(self, out_dir: str | Path) -> Path:
         out = Path(out_dir)
