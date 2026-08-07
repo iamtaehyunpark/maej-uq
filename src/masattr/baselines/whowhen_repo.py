@@ -1,9 +1,27 @@
 """Who&When baseline reproduction (spec v3 Part C §6, Part B.3).
 
 Their repo is a **dependency, not a fork**: point ``--repo-path`` at a checkout
-and this module imports their three functions from ``inference.py`` and calls
-them. Nothing of theirs is patched except that credentials arrive via CLI flags
-(their env-var fallback is documented but not implemented in their code). Their
+and this module invokes their ``inference.py`` **as a subprocess**, exactly as
+they document it. Nothing of theirs is patched, edited, or imported.
+
+Subprocess rather than import because their ``inference.py`` exposes only
+``main()`` behind argparse — there are no ``all_at_once`` / ``step_by_step`` /
+``binary_search`` functions to call. Their CLI is::
+
+    python inference.py --method {all_at_once,step_by_step,binary_search}
+                        --model <id> --directory_path <dir>
+                        --is_handcrafted {True,False}
+                        --api_key ... --azure_endpoint ... --api_version ...
+
+Note it targets **Azure OpenAI**, so the gpt-4o arm needs an endpoint as well as
+a key. It also reads a *directory of per-trajectory JSON*, not the parquet, and
+writes results to ``outputs/{method}_{model}[_handcrafted].txt`` beside itself
+rather than to stdout.
+
+Their files are named by ordinal (``1.json``), while our records are keyed by
+``question_ID``, so predictions are joined through the ``question_ID`` inside
+each of their files. Without that mapping the two sides would line up by
+position and quietly score nonsense. Their
 ``evaluate.py`` is *not* imported — the substring scorer is re-implemented in
 ``eval/scorers.py`` so the comparability row is deliberate.
 
@@ -19,13 +37,13 @@ for one.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from ..record import Record
 
@@ -136,29 +154,96 @@ def build_generator(spec: str, *, api_key: str | None = None, device: str | None
 # --- their repo, imported ---------------------------------------------------
 
 
-def load_repo(repo_path: str | Path) -> Any:
-    """Import the Who&When repo's ``inference.py`` as a module."""
+#: Where ``inference.py`` sits in their tree, newest layout first.
+_INFERENCE_CANDIDATES = ("Automated_FA/inference.py", "inference.py", "evaluation/inference.py")
+
+
+def find_inference(repo_path: str | Path) -> Path:
     path = Path(repo_path)
-    candidates = [path / "inference.py", path / "evaluation" / "inference.py"]
-    for c in candidates:
+    for rel in _INFERENCE_CANDIDATES:
+        c = path / rel
         if c.exists():
-            spec = importlib.util.spec_from_file_location("whowhen_inference", c)
-            if spec and spec.loader:
-                mod = importlib.util.module_from_spec(spec)
-                sys.modules["whowhen_inference"] = mod
-                spec.loader.exec_module(mod)
-                return mod
-    raise FileNotFoundError(f"no inference.py under {path} (looked in {[str(c) for c in candidates]})")
+            return c
+    raise FileNotFoundError(
+        f"no inference.py under {path} (looked for {list(_INFERENCE_CANDIDATES)})"
+    )
 
 
-def repo_callables(mod: Any) -> dict[str, Callable]:
-    missing = [m for m in METHODS if not hasattr(mod, m)]
-    if missing:
-        raise AttributeError(
-            f"Who&When inference.py is missing {missing}; expected {list(METHODS)} — "
-            "their API changed, so wrap the new names rather than patching their file"
+def repo_command(
+    script: Path,
+    *,
+    method: str,
+    model: str,
+    directory_path: str | Path,
+    is_handcrafted: bool,
+    api_key: str | None,
+    azure_endpoint: str | None,
+    api_version: str | None = None,
+    device: str | None = None,
+) -> list[str]:
+    """Their documented command line. Credentials are passed explicitly."""
+    cmd = [
+        sys.executable,
+        str(script.name),
+        "--method",
+        method,
+        "--model",
+        model,
+        "--directory_path",
+        str(directory_path),
+        "--is_handcrafted",
+        "True" if is_handcrafted else "False",
+    ]
+    if api_key:
+        cmd += ["--api_key", api_key]
+    if azure_endpoint:
+        cmd += ["--azure_endpoint", azure_endpoint]
+    if api_version:
+        cmd += ["--api_version", api_version]
+    if device:
+        cmd += ["--device", device]
+    return cmd
+
+
+def run_repo_subprocess(
+    repo_path: str | Path,
+    *,
+    method: str,
+    model: str,
+    directory_path: str | Path,
+    is_handcrafted: bool,
+    api_key: str | None = None,
+    azure_endpoint: str | None = None,
+    api_version: str | None = None,
+    device: str | None = None,
+    timeout: int = 60 * 60 * 6,
+) -> str:
+    """Run their script in its own directory and return stdout.
+
+    Run from the script's directory because their default paths are relative to
+    it; anything else would require editing their file.
+    """
+    script = find_inference(repo_path)
+    cmd = repo_command(
+        script,
+        method=method,
+        model=model,
+        directory_path=directory_path,
+        is_handcrafted=is_handcrafted,
+        api_key=api_key,
+        azure_endpoint=azure_endpoint,
+        api_version=api_version,
+        device=device,
+    )
+    proc = subprocess.run(
+        cmd, cwd=script.parent, capture_output=True, text=True, timeout=timeout
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"their inference.py exited {proc.returncode}\n"
+            f"cmd: {' '.join(cmd)}\n{proc.stderr[-2000:]}"
         )
-    return {m: getattr(mod, m) for m in METHODS}
+    return proc.stdout
 
 
 # --- local re-prompting (NOT the reproduction) ------------------------------
@@ -276,15 +361,11 @@ def run_method(
     out = BaselineRun(subset=subset, method=method, generator=gen.name, impl=impl, n=len(records))
 
     if impl == "repo":
-        if repo_path is None:
-            raise ValueError("impl='repo' needs --repo-path pointing at the Who&When checkout")
-        fn = repo_callables(load_repo(repo_path))[method]
-        for rec in records:
-            agent, step = parse_answer(str(fn(rec.to_dict())))
-            out.preds[rec.key] = (agent, step)
-            out.calls += 1
-            out.unparsed += int(agent is None and step is None)
-        return out
+        raise ValueError(
+            "impl='repo' runs their script over a whole directory in one "
+            "invocation, so it is driven by runs/baselines.py rather than "
+            "per-record here — call run_repo_subprocess directly"
+        )
 
     if impl != "local":
         raise ValueError(f"unknown impl {impl!r}; use 'repo' or 'local'")
@@ -295,3 +376,46 @@ def run_method(
         out.calls += calls
         out.unparsed += int(agent is None and step is None)
     return out
+
+
+# --- reading their results ---------------------------------------------------
+
+#: Their own contract, re-implemented from evaluate.py rather than imported.
+_PRED_BLOCK = re.compile(r"Prediction for ([^:]+\.json):(.*?)(?=Prediction for|\Z)", re.DOTALL)
+_PRED_AGENT = re.compile(r"Agent Name:\s*([\w_]+)", re.IGNORECASE)
+_PRED_STEP = re.compile(r"Step Number:\s*(\d+)", re.IGNORECASE)
+
+
+def output_path(repo_path: str | Path, *, method: str, model: str, is_handcrafted: bool) -> Path:
+    script = find_inference(repo_path)
+    suffix = "_handcrafted" if is_handcrafted else ""
+    return script.parent / "outputs" / f"{method}_{model.replace('/', '_')}{suffix}.txt"
+
+
+def id_map(directory_path: str | Path) -> dict[str, str]:
+    """``their filename stem -> question_ID``, read from their own files."""
+    out: dict[str, str] = {}
+    for p in sorted(Path(directory_path).glob("*.json")):
+        try:
+            ident = json.loads(p.read_text(encoding="utf-8")).get("question_ID")
+        except (json.JSONDecodeError, OSError):
+            continue
+        if ident:
+            out[p.stem] = str(ident)
+    return out
+
+
+def parse_repo_output(text: str, ids: Mapping[str, str], subset: str) -> dict[str, tuple[str, int]]:
+    """Their result file -> ``{record key: (agent, step)}``."""
+    preds: dict[str, tuple[str, int]] = {}
+    for block in _PRED_BLOCK.finditer(text):
+        stem = Path(block.group(1).strip()).stem
+        body = block.group(2)
+        agent, step = _PRED_AGENT.search(body), _PRED_STEP.search(body)
+        if not (agent and step):
+            continue
+        ident = ids.get(stem)
+        if ident is None:
+            continue
+        preds[f"{subset}/{ident}"] = (agent.group(1), int(step.group(1)))
+    return preds

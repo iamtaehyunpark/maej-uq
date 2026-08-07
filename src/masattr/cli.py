@@ -10,7 +10,8 @@ Manifest order (Part C §7)::
     masattr load --assert          # 126 AG / 58 HC / 4092 steps / 3+3 flagged
     masattr typecheck              # rules vs HC parsed types, ≥90% gate
     masattr retype --splitter ...  # gate the plan/delegate splitter on HC, apply to AG
-    masattr judge --subsets alg hc --judge hf:<id>      [× readout × policy × GT]
+    masattr smoke --judge judge_primary   # Stage-0 gate: 10 files, 3 arms, both GT
+    masattr judge --subsets alg hc --judge judge_primary   [× readout × policy × GT]
     masattr e0 --scores ...        # field sanity; reports, decides nothing
     masattr e1 --scores ... --folds ...                  # primary vs baselines
     masattr baselines --generators openai:gpt-4o judge:hf:<id> --impl repo --repo-path ...

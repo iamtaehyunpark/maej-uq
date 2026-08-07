@@ -45,6 +45,13 @@ def _judge(data_root, tmp_path, extra=()):
     return sorted(str(p) for p in scores_dir.glob("*.jsonl"))
 
 
+def _folds(data_root, tmp_path, scores, name="fld"):
+    """Run E0 to fit the leave-one-out folds the attribution runs require."""
+    path = tmp_path / f"{name}.json"
+    main(["e0", *_base(data_root, tmp_path, name), "--scores", *scores, "--folds-out", str(path)])
+    return str(path)
+
+
 def test_freeze_and_verify_round_trip():
     hashes = specs.freeze()
     assert set(hashes) == {"prompts", "type_rules", "criteria", "judge", "rule_directive"}
@@ -94,7 +101,9 @@ def test_e1_refuses_a_threshold_it_would_have_to_invent(data_root, tmp_path, cap
 def test_e1_primary_table(data_root, tmp_path, capsys):
     scores = _judge(data_root, tmp_path)
     capsys.readouterr()
-    rc = main(["e1", *_base(data_root, tmp_path, "e1"), "--scores", *scores, "--threshold", "0.5"])
+    folds = _folds(data_root, tmp_path, scores, "f_e1")
+    capsys.readouterr()
+    rc = main(["e1", *_base(data_root, tmp_path, "e1"), "--scores", *scores, "--folds", folds])
     assert rc == 0
     res = json.loads((tmp_path / "e1" / "results.json").read_text())
     cfg = next(iter(res["configs"].values()))
@@ -119,7 +128,9 @@ def test_e1_primary_table(data_root, tmp_path, capsys):
 def test_e1_reports_hc_role_disagreement(data_root, tmp_path, capsys):
     scores = _judge(data_root, tmp_path)
     capsys.readouterr()
-    main(["e1", *_base(data_root, tmp_path, "e1b"), "--scores", *scores, "--threshold", "0.5"])
+    folds = _folds(data_root, tmp_path, scores, "f_e1b")
+    capsys.readouterr()
+    main(["e1", *_base(data_root, tmp_path, "e1b"), "--scores", *scores, "--folds", folds])
     res = json.loads((tmp_path / "e1b" / "results.json").read_text())
     hc = [v for k, v in res["configs"].items() if "subset=hc" in k]
     assert hc and hc[0]["disagreement_by_role"]
@@ -128,8 +139,10 @@ def test_e1_reports_hc_role_disagreement(data_root, tmp_path, capsys):
 def test_ablation_refuses_a_single_arm(data_root, tmp_path, capsys):
     scores = _judge(data_root, tmp_path)
     capsys.readouterr()
+    folds = _folds(data_root, tmp_path, scores, "f_e2")
+    capsys.readouterr()
     with pytest.raises(SystemExit, match="not an ablation"):
-        main(["e2", *_base(data_root, tmp_path, "e2"), "--scores", *scores, "--threshold", "0.5"])
+        main(["e2", *_base(data_root, tmp_path, "e2"), "--scores", *scores, "--folds", folds])
 
 
 def test_readout_ablation_with_both_arms(data_root, tmp_path, capsys):
@@ -137,7 +150,7 @@ def test_readout_ablation_with_both_arms(data_root, tmp_path, capsys):
     b = _judge(data_root, tmp_path, extra=["--readout", "verbalized"])
     capsys.readouterr()
     rc = main(
-        ["e2", *_base(data_root, tmp_path, "e2b"), "--scores", *a, *b, "--threshold", "0.5"]
+        ["e2", *_base(data_root, tmp_path, "e2b"), "--scores", *a, *b, "--folds", _folds(data_root, tmp_path, a + b, "f_e2b")]
     )
     assert rc == 0
     res = json.loads((tmp_path / "e2b" / "results.json").read_text())
@@ -149,7 +162,7 @@ def test_evidence_ablation_includes_the_hindsight_ceiling(data_root, tmp_path, c
     a = _judge(data_root, tmp_path)
     b = _judge(data_root, tmp_path, extra=["--policy", "hindsight"])
     capsys.readouterr()
-    rc = main(["e5", *_base(data_root, tmp_path, "e5"), "--scores", *a, *b, "--threshold", "0.5"])
+    rc = main(["e5", *_base(data_root, tmp_path, "e5"), "--scores", *a, *b, "--folds", _folds(data_root, tmp_path, a + b, "f_e5")])
     assert rc == 0
     res = json.loads((tmp_path / "e5" / "results.json").read_text())
     assert any("policy=hindsight" in k for k in res["configs"])
@@ -159,7 +172,7 @@ def test_typing_ablation(data_root, tmp_path, capsys):
     a = _judge(data_root, tmp_path)
     b = _judge(data_root, tmp_path, extra=["--no-types"])
     capsys.readouterr()
-    rc = main(["e4", *_base(data_root, tmp_path, "e4"), "--scores", *a, *b, "--threshold", "0.5"])
+    rc = main(["e4", *_base(data_root, tmp_path, "e4"), "--scores", *a, *b, "--folds", _folds(data_root, tmp_path, a + b, "f_e4")])
     assert rc == 0
     res = json.loads((tmp_path / "e4" / "results.json").read_text())
     assert "use_types" in res["varied_axes"]
@@ -182,7 +195,7 @@ def test_baselines_local_impl_is_marked_in_the_manifest(data_root, tmp_path, cap
 
 
 def test_e7_surrogate(data_root, tmp_path, capsys):
-    rc = main(["e7", *_base(data_root, tmp_path, "e7")])
+    rc = main(["e7", *_base(data_root, tmp_path, "e7"), "--proxy-lm", "mock"])
     assert rc == 0
     res = json.loads((tmp_path / "e7" / "results.json").read_text())
     assert any(k.startswith("mean_logprob") for k in res["arms"])
@@ -192,7 +205,9 @@ def test_e7_surrogate(data_root, tmp_path, capsys):
 def test_e9_stratifies_e1_output(data_root, tmp_path, capsys):
     scores = _judge(data_root, tmp_path)
     capsys.readouterr()
-    main(["e1", *_base(data_root, tmp_path, "e1c"), "--scores", *scores, "--threshold", "0.5"])
+    folds = _folds(data_root, tmp_path, scores, "f_e1c")
+    capsys.readouterr()
+    main(["e1", *_base(data_root, tmp_path, "e1c"), "--scores", *scores, "--folds", folds])
     capsys.readouterr()
     rc = main(
         [
@@ -254,7 +269,9 @@ def test_e1_reports_the_anomaly_slice(parquet_root, tmp_path, capsys):
     main(["judge", *_base(parquet_root, tmp_path, "j2"), "--scores-dir", str(scores_dir)])
     capsys.readouterr()
     scores = sorted(str(p) for p in scores_dir.glob("*.jsonl"))
-    main(["e1", *_base(parquet_root, tmp_path, "e1anom"), "--scores", *scores, "--threshold", "0.5"])
+    folds = _folds(parquet_root, tmp_path, scores, "f_anom")
+    capsys.readouterr()
+    main(["e1", *_base(parquet_root, tmp_path, "e1anom"), "--scores", *scores, "--folds", folds])
     res = json.loads((tmp_path / "e1anom" / "results.json").read_text())
     cfg = next(iter(res["configs"].values()))
     assert "exact/excl_anomalous" in cfg["scores"]["first_crossing"]
@@ -289,7 +306,7 @@ def test_e5_prefix_window_is_an_ablation_arm(data_root, tmp_path, capsys):
     a = _judge(data_root, tmp_path)
     b = _judge(data_root, tmp_path, extra=["--prefix-window", "2"])
     capsys.readouterr()
-    rc = main(["e5", *_base(data_root, tmp_path, "e5w"), "--scores", *a, *b, "--threshold", "0.5"])
+    rc = main(["e5", *_base(data_root, tmp_path, "e5w"), "--scores", *a, *b, "--folds", _folds(data_root, tmp_path, a + b, "f_e5w")])
     assert rc == 0
     res = json.loads((tmp_path / "e5w" / "results.json").read_text())
     assert "prefix_window" in res["varied_axes"]
@@ -372,14 +389,20 @@ def test_judge_roles_are_declared_and_pairwise_disjoint():
     assert specs.client_spec("judge_primary") == "hf:Qwen/Qwen3.6-35B-A3B"
 
 
-def test_a_draft_role_refuses_to_resolve():
+def test_a_draft_role_refuses_to_resolve(tmp_path, monkeypatch):
+    import json as _json
+
+    from masattr import specs
     from masattr.runs._shared import resolve_model
 
-    # The secondary judge and the type classifier are still drafts, so any run
-    # that would actually call them stops.
-    for role in ("judge_secondary", "type_classifier"):
-        with pytest.raises(RuntimeError, match="not\\s+'confirmed'"):
-            resolve_model(role)
+    blob = specs.judge_spec()
+    blob["judge_secondary"] = {**blob["judge_secondary"], "status": "draft"}
+    path = tmp_path / "judge.json"
+    path.write_text(_json.dumps(blob))
+    monkeypatch.setattr(specs, "JUDGE_FILE", path)
+
+    with pytest.raises(RuntimeError, match="not 'confirmed'"):
+        resolve_model("judge_secondary")
     assert resolve_model("judge_primary") == "hf:Qwen/Qwen3.6-35B-A3B"
     assert resolve_model("mock") == "mock"
     assert resolve_model("hf:some/other-model") == "hf:some/other-model"
@@ -417,3 +440,92 @@ def test_a_same_family_type_classifier_is_caught(tmp_path, monkeypatch):
     assert any("type_classifier" in p and "both family" in p for p in problems)
     with pytest.raises(RuntimeError, match="confirmed"):
         specs.require_status("judge", specs.judge_spec(), "confirmed", "why")
+
+
+# --- Step-1 config, verified against the registered files -------------------
+
+
+def test_criteria_are_registered_and_in_z_units():
+    from masattr import specs
+
+    c = specs.criteria()
+    assert c["status"] == "registered"
+    assert c["changepoint_min_contrast"] == 1.0
+    assert c["changepoint_min_contrast_units"] == "z"
+
+
+def test_all_roles_confirmed_and_disjoint():
+    from masattr import specs
+    from masattr.runs._shared import resolve_model
+
+    assert specs.check_families() == []
+    for role in ("judge_primary", "judge_secondary", "type_classifier", "proxy_lm"):
+        assert specs.role(role)["status"] == "confirmed"
+        assert resolve_model(role).startswith("hf:")
+
+
+def test_primary_rule_refuses_unnormalized_scores(data_root, tmp_path, capsys):
+    scores = _judge(data_root, tmp_path)
+    capsys.readouterr()
+    # The registered contrast bound is in z-units; --threshold must not be a way
+    # to run the primary rule against raw scores.
+    with pytest.raises(SystemExit, match="z-normalized units"):
+        main(["e1", *_base(data_root, tmp_path, "e1raw"), "--scores", *scores, "--threshold", "0.5"])
+
+
+def test_smoke_runs_all_three_arms_and_gates(data_root, tmp_path, capsys):
+    rc = main(
+        [
+            "smoke",
+            *_base(data_root, tmp_path, "smk"),
+            "--scores-dir",
+            str(tmp_path / "smk_scores"),
+            "--n-files",
+            "4",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert rc in (0, 4)
+    res = json.loads((tmp_path / "smk" / "results.json").read_text())
+    assert set(res["arms"]) == {
+        "W0_nogt", "W0_gt", "W_resp_nogt", "W_resp_gt", "W_own_nogt", "W_own_gt",
+    }
+    assert "GATE" in out
+    assert (tmp_path / "smk" / "curves.csv").exists()
+
+
+def test_smoke_curves_mark_the_annotated_step(data_root, tmp_path, capsys):
+    import csv as _csv
+
+    main(
+        [
+            "smoke",
+            *_base(data_root, tmp_path, "smk2"),
+            "--scores-dir",
+            str(tmp_path / "smk2_scores"),
+            "--n-files",
+            "4",
+        ]
+    )
+    capsys.readouterr()
+    with (tmp_path / "smk2" / "curves.csv").open() as fh:
+        rows = list(_csv.DictReader(fh))
+    assert rows
+    assert {"arm", "with_gt", "file", "step", "p_raw", "is_mistake_step"} <= set(rows[0])
+    # Exactly one marked step per (arm, gt, file).
+    from collections import Counter
+
+    marked = Counter(
+        (r["arm"], r["with_gt"], r["file"]) for r in rows if r["is_mistake_step"] == "1"
+    )
+    assert marked and set(marked.values()) == {1}
+
+
+def test_smoke_arm_switches_match_the_spec():
+    from masattr.runs.smoke import ARMS
+
+    assert ARMS == (
+        ("W0", "plain", False, False),
+        ("W+resp", "typed", False, True),
+        ("W+own", "typed", True, False),
+    )

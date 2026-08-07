@@ -14,6 +14,7 @@ from . import (
     judge,
     load,
     retype,
+    smoke,
     typecheck,
 )
 
@@ -23,6 +24,7 @@ ORDER = (
     "load",
     "typecheck",
     "retype",
+    "smoke",
     "judge",
     "e0",
     "e1",
@@ -39,6 +41,7 @@ COMMANDS = {
     "load": load,
     "typecheck": typecheck,
     "retype": retype,
+    "smoke": smoke,
     "judge": judge,
     "baselines": baselines,
     "e0": e0_field,

@@ -68,7 +68,7 @@ DISJOINT_PAIRS = (
     ("judge_primary", "judge_secondary"),
 )
 
-ROLES = ("judge_primary", "judge_secondary", "type_classifier")
+ROLES = ("judge_primary", "judge_secondary", "type_classifier", "proxy_lm")
 
 
 def judge_spec() -> dict[str, Any]:

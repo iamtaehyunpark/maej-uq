@@ -42,28 +42,35 @@ Measured over `src/masattr/**.py` (AST-based; docstring lines counted separately
 
 | | lines |
 |---|---|
-| code | **3979** |
+| code | **4403** |
 | docstrings | 829 |
 | blank + comment | 1179 |
 | physical total | 5987 |
 | tests (not counted toward the target) | 1789 |
 
-**Under the ≤4k target, at 3979 code lines** — with ~20 lines of headroom, so
-the next feature needs a cut alongside it. Largest modules: `judge/score.py`,
-`runs/_shared.py`, `attribute/rules.py`, `normalize/fit.py`.
+**Over the ≤4k target by 403 code lines.** Two additions this cycle account for
+it: the Stage-0 smoke gate (~130) and the baseline wrapper's rewrite from
+"import their three functions" to "invoke their CLI and join predictions through
+`question_ID`" (~150, and it was previously broken against their actual repo).
 
-The re-export walls were cut earlier; what remains is features. In the order I
-would cut them if the ceiling binds:
+Cuts available, in the order I would take them:
 
-- `baselines/whowhen_repo.py` `--impl local` (~110 lines): the three strategies
-  re-prompted so the pipeline runs without their checkout. Not the reproduction;
-  deletable if the checkout is always present.
-- `runs/e2/e3/e4/e5/e6` (~50 lines total): five thin argparse wrappers over one
-  shared body. They exist because the spec asks for one `run.py` per experiment;
-  a single `masattr ablate --axis` would replace them.
+- `baselines/whowhen_repo.py` `--impl local` and its three strategy functions
+  (~110 lines): a re-prompting of the strategies so the pipeline runs without
+  their checkout. Now that the checkout is on the cluster and `--impl repo`
+  works, this is a dev convenience — but deleting it makes the baseline tests
+  need credentials and a GPU.
+- `runs/e2/e3/e4/e5/e6` (~50 lines): five thin argparse wrappers over one shared
+  body, existing only because the spec asks for one `run.py` per experiment. A
+  single `masattr ablate --axis` replaces them.
 - Mock client / mock proxy LM / mock splitter (~90 lines): required for the
-  dependency-free test suite and dry runs; deleting them makes CI need a GPU.
-- `paths.py` `ALTERNATES` (~20 lines): tolerance for differently-laid-out copies.
+  dependency-free test suite and dry runs.
+- `paths.py` `ALTERNATES` (~20 lines).
+
+Taking the first two lands at ~4.24k — still over. Hitting 4k means dropping the
+mocks too, which costs the dependency-free test suite. My recommendation is to
+raise the ceiling to 4.5k rather than trade a working gate or CI for a round
+number, but that is the owner's call and nothing has been cut unilaterally.
 
 None of these is an abstraction; each is a capability.
 

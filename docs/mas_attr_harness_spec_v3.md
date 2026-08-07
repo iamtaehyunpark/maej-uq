@@ -171,6 +171,14 @@ by orchestrator/worker (HC only).
 
 ### 7. Experiment manifest
 
+**Stage-0 smoke, before anything else**: 10 seeded files, three evidence arms
+(W0 = prefix only; W+resp = peer corroboration; W+own = assigned-subtask
+pointer), both GT settings, curves plotted against the labeled steps. This is
+the go/no-go gate — a saturated or structureless field stops everything, the
+probe prompt is fixed, and the smoke re-runs. One evidence arm is then locked
+for the main pass (W0 unless W+resp visibly moves the dip earlier on the
+delegation-fault logs); the losing arms survive only inside E5.
+
 E0 **sanity-only** (score-field degeneracy, per-type distributions, stability
 reporting for the leave-one-out ablation arm; **decides nothing**) → E1 primary
 vs 3 baselines (both judges, both subsets, both GT arms) → E2 readout ablation →

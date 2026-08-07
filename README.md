@@ -65,6 +65,7 @@ record-level anomalies. The five file ids are logged in every run manifest.
 masattr freeze                                     # hash prompts, type rules, and both spec files
 masattr load --assert                              # 126 / 58 / 4092 steps / 3+3 flagged
 masattr typecheck --audit-out audit.json           # rules vs HC parsed types, ≥90% gate
+masattr smoke --judge judge_primary                # Stage-0 gate: 10 files, 3 arms, both GT
 masattr retype --splitter type_classifier          # gate + apply the plan/delegate splitter
 masattr judge --judge judge_primary                # × readout × policy × GT setting
 masattr e0 --scores runs/scores/*.jsonl            # field sanity, threshold stability, primary rule
@@ -197,12 +198,15 @@ the live prompts and type rules still match `specs/` before it starts.
   `correct = idx < mistake_step`, excluding the post-mistake tail rather than
   guessing it. The `point` policy keeps every step and asserts the tail is fine.
   Documented at the top of `normalize/fit.py`; both are pre-registered.
-- **Owner-set spec files gate the runs.** `specs/criteria.json` must be
-  `registered` before any attribution number — the changepoint fallback
-  condition is part of the primary rule. `specs/judge.json` carries a status
-  **per role**, so a run is blocked only by the roles it uses: the primary judge
-  is confirmed, while the secondary judge and the type classifier are still
-  drafts and any run that would call them stops.
+- **Owner-set spec files gate the runs.** `specs/criteria.json` is
+  **registered** (changepoint contrast bound 1.0, in z-normalized units — the
+  primary rule refuses raw scores so the bound cannot silently mean something
+  else). `specs/judge.json` carries a status per role; all four roles are
+  confirmed.
+- **No domain axis.** The benchmark has no domain labels and the `question_ID`
+  shape split is a source split, not a topical one, so typing and the uniformity
+  stratification are function × role, stratified by subset. Domain is deferred
+  to the self-generated corpus.
 - **The surrogate baseline is a surrogate.** Frozen logs do not carry the
   generating model's distributions. A proxy LM's logprob and entropy are the
   closest computable thing, they are uncalibrated, and they are expected to be

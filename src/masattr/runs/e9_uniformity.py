@@ -2,7 +2,13 @@
 
 Recomputed from E1's saved predictions: is the primary rule uniformly good, or
 is it carried by one stratum? Accuracy is broken out by the gold step's act
-type, by orchestrator vs worker, and by trajectory length.
+type, by orchestrator vs worker, by subset, and by trajectory length — i.e.
+**function × role, stratified by subset**.
+
+There is no domain axis. The benchmark carries no domain labels and the
+`question_ID` shape split is a source split rather than a topical one, so the
+domain stratification is deferred to the self-generated corpus rather than
+faked from an identifier.
 
 A method that only works on ``execute`` steps in short trajectories is a
 different claim from one that works across the corpus, and the aggregate number

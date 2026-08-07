@@ -65,11 +65,13 @@ def test_bootstrap_ci_brackets_the_point():
 
 
 def test_substring_scorer_reproduces_the_published_artifact():
-    assert substring_step(1, 12)  # "1" in "12" — why exact match is primary
+    # Their test is `actual_step in pred['predicted_step']`: gold inside the
+    # prediction. Predicting 12 scores a hit against gold 1 — why exact is primary.
+    assert substring_step(12, 1)
 
 
 def test_dual_scorer_disagrees_where_expected():
-    pairs = [(("WebSurfer", 1), ("WebSurfer", 12))]
+    pairs = [(("WebSurfer", 12), ("WebSurfer", 1))]  # (pred, gold)
     assert score_pairs(pairs, scorer="exact", n_boot=10).step_acc == 0.0
     assert score_pairs(pairs, scorer="substring", n_boot=10).step_acc == 1.0
 
@@ -321,3 +323,37 @@ def test_registered_fallback_condition_changes_behaviour():
     assert changepoint_single(s, boundary_fallback=True).detail["reason"] == "boundary"
     strict = changepoint_single(s, boundary_fallback=False)
     assert strict.detail.get("fallback") is None and strict.step == 6
+
+
+def test_substring_scorer_is_one_directional_like_theirs():
+    from masattr.eval.scorers import substring_agent, substring_step
+
+    # Their evaluate.py tests `actual_step in pred['predicted_step']` — gold
+    # contained in the prediction, not symmetric. A symmetric version would be
+    # strictly more lenient and would not reproduce the published regime.
+    assert substring_step(12, 1)  # gold 1 inside prediction 12 — the artifact
+    assert not substring_step(1, 12)  # gold 12 is not inside prediction 1
+    assert substring_agent("the WebSurfer agent", "WebSurfer")
+    assert not substring_agent("Web", "WebSurfer")
+
+
+def test_repo_predictions_join_through_question_id():
+    from masattr.baselines.whowhen_repo import parse_repo_output
+
+    # Their files are named by ordinal; ours are keyed by question_ID. Joining
+    # by position instead would line the two sides up wrongly and score noise.
+    ids = {"1": "abc-123", "2": "def-456"}
+    text = (
+        "Prediction for 1.json:\nAgent Name: Excel_Expert\nStep Number: 0\n"
+        "Prediction for 2.json:\nAgent Name: WebSurfer\nStep Number: 7\n"
+        "Prediction for 9.json:\nAgent Name: Ghost\nStep Number: 1\n"
+    )
+    preds = parse_repo_output(text, ids, "alg")
+    assert preds == {"alg/abc-123": ("Excel_Expert", 0), "alg/def-456": ("WebSurfer", 7)}
+
+
+def test_repo_output_parser_skips_unparseable_blocks():
+    from masattr.baselines.whowhen_repo import parse_repo_output
+
+    text = "Prediction for 1.json:\nthe model rambled and named nothing\n"
+    assert parse_repo_output(text, {"1": "abc"}, "alg") == {}

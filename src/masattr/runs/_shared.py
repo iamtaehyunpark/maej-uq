@@ -336,6 +336,17 @@ def run_config_tables(
     configs = read_configs(args.scores, folds, typed=typed_norm)
     if not configs:
         raise SystemExit(f"no score rows found in {args.scores}")
+    if primary == "changepoint_single" and not all(
+        row.p_norm is not None
+        for grouped in configs.values()
+        for rows in grouped.values()
+        for row in rows
+    ):
+        raise SystemExit(
+            "the primary rule's registered contrast bound is in z-normalized "
+            "units, so it cannot be read against raw scores — pass --folds. "
+            "(--threshold governs the demoted threshold-dependent rows only.)"
+        )
     varied = varied_axes(configs)
     wanted = (expect_axis,) if isinstance(expect_axis, str) else tuple(expect_axis or ())
     if wanted and not (set(wanted) & set(varied)):

@@ -15,8 +15,17 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
-from ..baselines.whowhen_repo import METHODS, build_generator, run_method
+from ..baselines.whowhen_repo import (
+    METHODS,
+    build_generator,
+    id_map,
+    output_path,
+    parse_repo_output,
+    run_method,
+    run_repo_subprocess,
+)
 from ..eval.scorers import gold_map, render, score_all
 from ._shared import add_common, emit, flatten, held_aside_keys, load_records, open_manifest
 
@@ -32,7 +41,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--methods", nargs="+", default=list(METHODS), choices=list(METHODS))
     p.add_argument("--impl", default="local", choices=("repo", "local"))
     p.add_argument("--repo-path", help="Who&When checkout (required for --impl repo)")
-    p.add_argument("--api-key", help="passed explicitly; their env-var fallback is not implemented")
+    p.add_argument(
+        "--repo-data",
+        help="their per-trajectory JSON directory, one per subset: "
+        "--repo-data alg=<dir> hc=<dir>",
+        nargs="+",
+        default=[],
+    )
+    p.add_argument("--repo-model", default="gpt-4o", help="a model id from their ALL_MODELS")
+    p.add_argument("--api-key", help="passed explicitly on the command line")
+    p.add_argument(
+        "--api-key-file",
+        help="read the key from a file instead, so it stays out of shell history",
+    )
+    p.add_argument(
+        "--azure-endpoint",
+        help="their inference.py targets Azure OpenAI, so the gpt-4o arm needs this too",
+    )
     p.add_argument("--device")
     p.add_argument("--limit", type=int, help="first N files per subset (smoke runs)")
     return p
@@ -40,6 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    if args.api_key_file:
+        args.api_key = Path(args.api_key_file).read_text(encoding="utf-8").strip()
     manifest = open_manifest("baselines", args)
     records_by_subset = load_records(args)
     all_records = flatten(records_by_subset)
@@ -53,6 +80,72 @@ def main(argv=None) -> int:
 
     results: dict = {"impl": args.impl, "runs": []}
     table: dict[str, dict] = {}
+    repo_data = dict(kv.split("=", 1) for kv in args.repo_data)
+
+    if args.impl == "repo":
+        for subset, records in records_by_subset.items():
+            gold = gold_map(records)
+            directory = repo_data.get(subset)
+            if not directory:
+                raise SystemExit(
+                    f"--impl repo needs their JSON directory for {subset!r}: "
+                    f"--repo-data {subset}=<dir>"
+                )
+            ids = id_map(directory)
+            for method in args.methods:
+                run_repo_subprocess(
+                    args.repo_path,
+                    method=method,
+                    model=args.repo_model,
+                    directory_path=directory,
+                    is_handcrafted=(subset == "hc"),
+                    api_key=args.api_key,
+                    azure_endpoint=args.azure_endpoint,
+                    device=args.device,
+                )
+                out_file = output_path(
+                    args.repo_path,
+                    method=method,
+                    model=args.repo_model,
+                    is_handcrafted=(subset == "hc"),
+                )
+                preds = parse_repo_output(
+                    out_file.read_text(encoding="utf-8"), ids, subset
+                )
+                if not preds:
+                    raise SystemExit(
+                        f"parsed no predictions from {out_file}; their output format "
+                        "may have changed — check it before trusting any row"
+                    )
+                scored = score_all(
+                    {k: _Pred(v) for k, v in preds.items()},
+                    gold,
+                    records,
+                    held_aside=held,
+                    n_boot=args.n_boot,
+                    seed=args.seed,
+                )
+                label = f"{method} · {args.repo_model} · subset={subset} · impl=repo"
+                table[label] = scored
+                results["runs"].append(
+                    {
+                        "subset": subset,
+                        "method": method,
+                        "generator": args.repo_model,
+                        "impl": "repo",
+                        "n": len(preds),
+                        "n_gold": len(gold),
+                        "output_file": str(out_file),
+                        "scores": scored,
+                    }
+                )
+        md = "\n".join(
+            ["# Who&When baselines (their script)", "", render(table), "",
+             "> Their `inference.py` was invoked as a subprocess and its result file "
+             "parsed on their own contract; nothing of theirs was edited or imported."]
+        )
+        emit(manifest, results, md, args.out_dir)
+        return 0
 
     for subset, records in records_by_subset.items():
         gold = gold_map(records)

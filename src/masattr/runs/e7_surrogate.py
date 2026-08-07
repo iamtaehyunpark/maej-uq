@@ -26,7 +26,11 @@ from ._shared import (
 
 def build_parser() -> argparse.ArgumentParser:
     p = add_common(argparse.ArgumentParser(prog="masattr e7", description=__doc__))
-    p.add_argument("--proxy-lm", default="mock", help="mock | <hf model id>")
+    p.add_argument(
+        "--proxy-lm",
+        default="proxy_lm",
+        help="mock | <hf model id> | proxy_lm (from specs/judge.json)",
+    )
     p.add_argument("--device")
     p.add_argument(
         "--threshold",
@@ -43,7 +47,13 @@ def main(argv=None) -> int:
     manifest = open_manifest("e7_surrogate", args)
     records = flatten(load_records(args))
 
-    lm = MockProxyLM() if args.proxy_lm == "mock" else ProxyLM(args.proxy_lm, device=args.device)
+    spec = args.proxy_lm
+    if spec == "proxy_lm":
+        from .. import specs as spec_files
+
+        spec_files.require_role("proxy_lm")
+        spec = spec_files.role_id("proxy_lm")
+    lm = MockProxyLM() if spec == "mock" else ProxyLM(spec, device=args.device)
     rows, logprob_scores = score_records(records, lm)
     ent_scores = entropy_scores(rows, records)
 

@@ -5,9 +5,12 @@ substring scorer, re-implemented here from the four lines in their
 ``evaluate.py`` — their eval path is not imported, so the artifact is
 reproduced deliberately and labelled, never inherited by accident.
 
-The artifact: ``str(pred) in str(gold)`` makes a predicted step ``1`` a hit
-against gold ``12``. That regime is what the published numbers were computed in,
-so it is reported as a comparability row and never as primary.
+Their test is one-directional — ``actual_agent in pred['predicted_agent']`` and
+``actual_step in pred['predicted_step']`` — i.e. **gold contained in the
+prediction**, not the other way and not symmetric. So a prediction of ``12``
+scores a hit against gold ``1``, while predicting ``1`` against gold ``12`` does
+not. A symmetric re-implementation would be strictly more lenient than the
+published regime and would therefore not reproduce it.
 
 Every table is dual-reported with and without the 6 ``agent_step_mismatch``
 files and, in Exp-0's aftermath, with and without the held-aside 20. CIs
@@ -44,16 +47,17 @@ def exact_step(pred: int | None, gold: int | None) -> bool:
 
 
 def substring_agent(pred: str | None, gold: str | None) -> bool:
+    """``actual_agent in pred['predicted_agent']`` — gold contained in prediction."""
     if pred is None or gold is None:
         return False
-    p, g = pred.strip().lower(), gold.strip().lower()
-    return p in g or g in p
+    return gold.strip().lower() in pred.strip().lower()
 
 
 def substring_step(pred: int | None, gold: int | None) -> bool:
+    """``actual_step in pred['predicted_step']`` — gold contained in prediction."""
     if pred is None or gold is None:
         return False
-    return str(pred) in str(gold) or str(gold) in str(pred)
+    return str(gold) in str(pred)
 
 
 SCORERS = {
@@ -183,7 +187,7 @@ def render(rows: Mapping[str, Mapping[str, dict]], title: str = "") -> str:
     lines += [
         "",
         "> Exact match is primary. The substring row reproduces the published-number "
-        'regime and carries its artifact: predicted step `1` scores as a hit against '
-        "gold `12`.",
+        "regime and carries its artifact: gold is tested for containment in the "
+        "prediction, so predicting `12` scores a hit against gold `1`.",
     ]
     return "\n".join(lines)
