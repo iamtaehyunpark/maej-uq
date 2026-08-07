@@ -49,6 +49,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
     )
     p.add_argument("--repo-model", default="gpt-4o", help="a model id from their ALL_MODELS")
+    p.add_argument(
+        "--served-base-url",
+        help="redirect their OpenAI client here — the capability control: their "
+        "prompts and logic, our judge",
+    )
+    p.add_argument("--served-model", help="model name to rewrite their calls to")
     p.add_argument("--api-key", help="passed explicitly on the command line")
     p.add_argument(
         "--api-key-file",
@@ -98,9 +104,11 @@ def main(argv=None) -> int:
                     model=args.repo_model,
                     directory_path=directory,
                     is_handcrafted=(subset == "hc"),
-                    api_key=args.api_key,
+                    api_key=args.api_key or "not-needed",
                     device=args.device,
                     snapshot_receipt=receipt,
+                    base_url=args.served_base_url,
+                    model_rewrite=args.served_model,
                 )
                 snapshots = (
                     sorted(set(receipt.read_text().split())) if receipt.exists() else []
@@ -132,13 +140,14 @@ def main(argv=None) -> int:
                     n_boot=args.n_boot,
                     seed=args.seed,
                 )
-                label = f"{method} · {args.repo_model} · subset={subset} · impl=repo"
+                arm = args.served_model or args.repo_model
+                label = f"{method} · {arm} · subset={subset} · impl=repo"
                 table[label] = scored
                 results["runs"].append(
                     {
                         "subset": subset,
                         "method": method,
-                        "generator": args.repo_model,
+                        "generator": args.served_model or args.repo_model,
                         "impl": "repo",
                         "n": len(preds),
                         "n_gold": len(gold),

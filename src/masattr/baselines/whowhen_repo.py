@@ -220,6 +220,8 @@ def run_repo_subprocess(
     api_key: str | None = None,
     device: str | None = None,
     snapshot_receipt: str | Path | None = None,
+    base_url: str | None = None,
+    model_rewrite: str | None = None,
     timeout: int = 60 * 60 * 6,
 ) -> str:
     """Run their script in its own directory and return stdout.
@@ -242,6 +244,10 @@ def run_repo_subprocess(
     env["PYTHONPATH"] = os.pathsep.join([str(shim_dir), env.get("PYTHONPATH", "")]).strip(os.pathsep)
     if snapshot_receipt:
         env["MASATTR_SNAPSHOT_RECEIPT"] = str(snapshot_receipt)
+    if base_url:
+        env["MASATTR_OPENAI_BASE_URL"] = base_url
+    if model_rewrite:
+        env["MASATTR_MODEL_REWRITE"] = model_rewrite
     proc = subprocess.run(
         cmd, cwd=script.parent, capture_output=True, text=True, timeout=timeout, env=env
     )
@@ -432,16 +438,27 @@ def parse_repo_output(text: str, ids: Mapping[str, str], subset: str) -> dict[st
 
 _SHIM = '''"""Injected at the subprocess boundary; their tree is never edited.
 
-Their inference.py still imports the Azure client, a stale dependency rather
-than a design choice. This makes AzureOpenAI construct a standard OpenAI client
-and drops the endpoint/api-version arguments, and records the concrete model
-snapshot the API returns so a drifted alias is visible afterwards.
+Three jobs, all env-driven so their file stays byte-identical:
+
+1. Their inference.py still imports the Azure client, a stale dependency rather
+   than a design choice. AzureOpenAI here constructs a standard OpenAI client
+   and drops the endpoint/api-version arguments.
+2. MASATTR_OPENAI_BASE_URL redirects the client at a local OpenAI-compatible
+   server, which is how their three strategies run on our judge — the
+   capability control: their prompts and logic, our model.
+3. MASATTR_MODEL_REWRITE replaces the model name on every call, because their
+   CLI only accepts names from their own hard-coded list.
+
+It also records the concrete model string the API returns, so a drifted alias
+or an unexpected served model is visible afterwards.
 """
 import os
 
 import openai
 
 _receipt = os.environ.get("MASATTR_SNAPSHOT_RECEIPT")
+_base_url = os.environ.get("MASATTR_OPENAI_BASE_URL")
+_rewrite = os.environ.get("MASATTR_MODEL_REWRITE")
 _seen = set()
 
 
@@ -458,6 +475,8 @@ class _Completions:
         self._inner = inner
 
     def create(self, *a, **kw):
+        if _rewrite:
+            kw["model"] = _rewrite
         resp = self._inner.create(*a, **kw)
         _record(getattr(resp, "model", None))
         return resp
@@ -473,6 +492,9 @@ class _Client:
     def __init__(self, *a, **kw):
         for drop in ("azure_endpoint", "api_version", "azure_deployment"):
             kw.pop(drop, None)
+        if _base_url:
+            kw["base_url"] = _base_url
+            kw.setdefault("api_key", "not-needed")
         self._inner = openai.OpenAI(*a, **kw)
         self.chat = _Chat(self._inner.chat)
 
@@ -481,6 +503,7 @@ class _Client:
 
 
 openai.AzureOpenAI = _Client
+openai.OpenAI = _Client if _base_url else openai.OpenAI
 '''
 
 
