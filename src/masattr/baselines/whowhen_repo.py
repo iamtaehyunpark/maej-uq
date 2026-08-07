@@ -409,7 +409,8 @@ _PRED_STEP = re.compile(r"Step Number:\s*(\d+)", re.IGNORECASE)
 
 def output_path(repo_path: str | Path, *, method: str, model: str, is_handcrafted: bool) -> Path:
     script = find_inference(repo_path)
-    suffix = "_handcrafted" if is_handcrafted else ""
+    # Their naming, verbatim from inference.py: "_handcrafted" or "_alg_generated".
+    suffix = "_handcrafted" if is_handcrafted else "_alg_generated"
     return script.parent / "outputs" / f"{method}_{model.replace('/', '_')}{suffix}.txt"
 
 
@@ -464,6 +465,10 @@ import os
 
 import openai
 
+# Captured before the names are rebound below: _Client constructs one of these,
+# and binding openai.OpenAI to _Client first would make it construct itself.
+_RealOpenAI = openai.OpenAI
+
 _receipt = os.environ.get("MASATTR_SNAPSHOT_RECEIPT")
 _base_url = os.environ.get("MASATTR_OPENAI_BASE_URL")
 _rewrite = os.environ.get("MASATTR_MODEL_REWRITE")
@@ -503,7 +508,7 @@ class _Client:
         if _base_url:
             kw["base_url"] = _base_url
             kw.setdefault("api_key", "not-needed")
-        self._inner = openai.OpenAI(*a, **kw)
+        self._inner = _RealOpenAI(*a, **kw)
         self.chat = _Chat(self._inner.chat)
 
     def __getattr__(self, name):
@@ -511,7 +516,8 @@ class _Client:
 
 
 openai.AzureOpenAI = _Client
-openai.OpenAI = _Client if _base_url else openai.OpenAI
+if _base_url:
+    openai.OpenAI = _Client
 '''
 
 
