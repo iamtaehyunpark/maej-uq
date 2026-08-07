@@ -17,6 +17,7 @@ from ._common import (
     _TRUTH_KEYS,
     apply_anomaly_policy,
     as_text,
+    level_of,
     cast_step,
     finish,
     flag_mismatch,
@@ -63,6 +64,8 @@ def load_row(file_id: str, blob: dict, report: LoadReport, policy: str) -> Recor
         label_mistake_agent=as_text(pick(blob, ("mistake_agent", "agent"))),
         label_mistake_step=cast_step(blob.get("mistake_step", blob.get("step")), where),
         label_mistake_reason=as_text(pick(blob, ("mistake_reason", "reason"))),
+        level=level_of(blob)[0],
+        level_scale=level_of(blob)[1],
         source_file=report.source,
     )
     rec = apply_anomaly_policy(rec, policy, report)

@@ -21,7 +21,7 @@ in [`BUILD_REPORT.md`](BUILD_REPORT.md).
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/python -m pytest        # 155 tests, no data / GPU / network required
+.venv/bin/python -m pytest        # 176 tests, no data / GPU / network required
 ```
 
 Extras: `.[judge]` for the local-LM judge (torch + transformers), `.[openai]`
@@ -133,12 +133,20 @@ so a `T`-step trajectory costs `O(T)` prefix tokens. HC reaches 130 steps; the
 quadratic path is not runnable. `score_record` raises if handed a client that
 does not expose the shared-prefix path.
 
-**Evidence never looks ahead.** The rescue for near-empty `execute` steps pulls
-the assigned subtask and *earlier* same-turn peers. A future step in the
-evidence would make the score non-causal and inflate attribution for free. The
-one deliberate exception is `--policy hindsight`, which is the E5 ceiling, not a
-method. The subtask pointer, peer corroboration, and prefix window are
-separately switchable, because E5 ablates them separately.
+**Evidence has two independent parts.** *Base assembly* builds the prefix
+`0..t`, including the near-empty-execute rescue (assigned subtask + earlier
+same-turn peers), and is identical in every arm. *Lookahead* is what gets
+appended after step `t`, and that is the arm: `none` (**W0**, prefix-
+conditional), `resp` (**W+resp** — the following contiguous steps by other
+agents, capped at 2, i.e. the realized response), `own` (**W+own** — that plus
+the actor's next appearance). W+resp exists because a delegation error's
+evidence is the assignee's downstream struggle, which same-turn peers cannot
+see.
+
+`resp` and `own` deliberately look ahead, so those arms are **not**
+prefix-conditional — every score row records which arm produced it, and the
+lookahead rides in the readout segment rather than the shared prefix, so cost
+stays `O(T)`. `--policy hindsight` remains the E5 ceiling, not a method.
 
 **Long logs truncate under a pre-registered policy, not under context pressure.**
 Type-aware retention: query, ground truth, and every plan/delegate step stay

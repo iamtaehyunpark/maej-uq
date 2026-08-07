@@ -235,3 +235,69 @@ def test_prefix_never_exceeds_the_budget(chars):
     ts = score_record(_long_record(n_execute=60, chars=chars), MockClient(), budget_chars=30_000)
     # MockClient reports prefix_tokens as chars/4, so the budget converts too.
     assert max(s.prefix_tokens for s in ts.scores) * 4 <= 30_000
+
+
+# --- lookahead arms (W0 / W+resp / W+own) ------------------------------------
+
+
+def _mixed() -> Record:
+    steps = (
+        Step(0, "Orch", "o", "plan the work", "plan", "parsed"),
+        Step(1, "Orch", "o", "WebSurfer, go", "delegate", "parsed"),
+        Step(2, "WebSurfer", "w", "searching, no luck", "execute", "parsed"),
+        Step(3, "Verifier", "v", "that looks wrong", "execute", "parsed"),
+        Step(4, "Coder", "c", "third responder", "execute", "parsed"),
+        Step(5, "Orch", "o", "the answer is X", "final", "parsed"),
+    )
+    return Record(
+        subset="hc", file_id="m", query="q", ground_truth="g", steps=steps,
+        label_mistake_agent="Orch", label_mistake_step=1,
+    )
+
+
+def test_resp_takes_contiguous_other_agent_steps_capped_at_two():
+    from masattr.judge.score import RESP_CAP, lookahead_steps
+
+    rec = _mixed()
+    assert [s.idx for s in lookahead_steps(rec.steps, 1, "resp")] == [2, 3]
+    assert RESP_CAP == 2
+    # It stops at the actor's own reappearance, not just at the cap.
+    assert [s.idx for s in lookahead_steps(rec.steps, 4, "resp")] == [5]
+
+
+def test_own_adds_the_actors_next_appearance():
+    from masattr.judge.score import lookahead_steps
+
+    rec = _mixed()
+    assert [s.idx for s in lookahead_steps(rec.steps, 1, "own")] == [2, 3, 5]
+    # No later appearance -> nothing extra beyond the response window.
+    assert [s.idx for s in lookahead_steps(rec.steps, 2, "own")] == [3, 4]
+
+
+def test_w0_is_prefix_conditional():
+    from masattr.judge.score import lookahead_steps
+
+    assert lookahead_steps(_mixed().steps, 1, "none") == []
+
+
+def test_lookahead_is_recorded_on_every_row():
+    for mode in ("none", "resp", "own"):
+        ts = score_record(_mixed(), MockClient(), lookahead=mode)
+        assert all(s.lookahead == mode for s in ts.scores)
+        assert any(s.n_lookahead > 0 for s in ts.scores) == (mode != "none")
+
+
+def test_lookahead_does_not_enter_the_shared_prefix():
+    # It differs per step, so it must ride in the readout segment; otherwise the
+    # cache would be invalidated every step and cost would go quadratic.
+    base = score_record(_mixed(), MockClient(), lookahead="none")
+    ahead = score_record(_mixed(), MockClient(), lookahead="own")
+    assert [s.prefix_tokens for s in base.scores] == [s.prefix_tokens for s in ahead.scores]
+
+
+def test_near_empty_rescue_is_independent_of_the_arm():
+    # The rescue is base assembly, not an arm.
+    rec = _rec()  # step 2 is the bare "B"
+    for mode in ("none", "resp", "own"):
+        ts = score_record(rec, MockClient(), lookahead=mode)
+        assert ts.scores[2].augmented

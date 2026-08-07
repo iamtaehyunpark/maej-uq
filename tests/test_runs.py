@@ -219,7 +219,15 @@ def test_e9_stratifies_e1_output(data_root, tmp_path, capsys):
     )
     assert rc == 0
     res = json.loads((tmp_path / "e9" / "results.json").read_text())
-    assert set(res["strata"]) == {"gold_step_type", "gold_role", "trajectory_length", "subset"}
+    assert set(res["strata"]) == {
+        "gold_step_type",
+        "gold_role",
+        "trajectory_length",
+        "subset",
+        "level",
+    }
+    # No level in the parquet, so the axis is present and honestly empty.
+    assert [r["stratum"] for r in res["strata"]["level"]] == ["absent"]
     assert res["n_predictions"] > 0
 
 
@@ -521,11 +529,68 @@ def test_smoke_curves_mark_the_annotated_step(data_root, tmp_path, capsys):
     assert marked and set(marked.values()) == {1}
 
 
-def test_smoke_arm_switches_match_the_spec():
+def test_smoke_arms_differ_only_in_lookahead():
     from masattr.runs.smoke import ARMS
 
-    assert ARMS == (
-        ("W0", "plain", False, False),
-        ("W+resp", "typed", False, True),
-        ("W+own", "typed", True, False),
+    # The arms are a lookahead axis. Base assembly — including the near-empty
+    # rescue — is identical across them; conflating the two was a real bug.
+    assert ARMS == (("W0", "none"), ("W+resp", "resp"), ("W+own", "own"))
+
+
+# --- level axis and baseline transport --------------------------------------
+
+
+def test_level_carries_its_scale_and_never_mixes_them(records):
+    from masattr.loaders._common import level_of
+
+    assert level_of({"level": "2"}) == ("2", "numeric")
+    assert level_of({"level": 3}) == ("3", "numeric")
+    assert level_of({"level": "Hard"}) == ("Hard", "verbal")
+    assert level_of({}) == ("", "absent")
+    # Untouched by the parquet path, which drops the column entirely.
+    assert all(r.level_scale == "absent" for r in records["hc"])
+
+
+def test_enrich_levels_joins_on_question_id(tmp_path, records):
+    import json as _json
+
+    from masattr.loaders._common import enrich_levels
+
+    d = tmp_path / "theirs"
+    d.mkdir()
+    hc = records["hc"]
+    (d / "1.json").write_text(_json.dumps({"question_ID": hc[0].file_id, "level": "2"}))
+    (d / "2.json").write_text(_json.dumps({"question_ID": "not-in-corpus", "level": "3"}))
+    out = enrich_levels(hc, d)
+    assert out[0].level == "2" and out[0].level_scale == "numeric"
+    assert all(r.level_scale == "absent" for r in out[1:])
+
+
+def test_baseline_command_has_no_azure_arguments():
+    from masattr.baselines.whowhen_repo import repo_command
+
+    cmd = repo_command(
+        Path("inference.py"),
+        method="all_at_once",
+        model="gpt-4o",
+        directory_path="d",
+        is_handcrafted=False,
+        api_key="k",
     )
+    assert "--azure_endpoint" not in cmd and "--api_version" not in cmd
+    assert cmd[cmd.index("--api_key") + 1] == "k"
+
+
+def test_openai_shim_is_valid_and_redirects_azure(tmp_path):
+    import py_compile
+
+    from masattr.baselines.whowhen_repo import write_openai_shim
+
+    d = write_openai_shim(tmp_path / "snap.txt")
+    shim = d / "sitecustomize.py"
+    py_compile.compile(str(shim), doraise=True)
+    src = shim.read_text()
+    # It redirects rather than patching their tree, and drops the Azure-only args.
+    assert "openai.AzureOpenAI = _Client" in src
+    assert "azure_endpoint" in src and "api_version" in src
+    assert "MASATTR_SNAPSHOT_RECEIPT" in src

@@ -4,15 +4,32 @@ Per trajectory the client is reset once and the prefix grows by exactly one step
 per assessment, so cost is ``O(T)`` prefix tokens plus ``T`` short readouts. The
 loop asserts the shared-prefix path is live rather than assuming it.
 
-Three evidence policies, which are what E5 ablates:
+Evidence has two independent parts, and conflating them was a real bug once.
 
-* ``typed`` (default) — prefix 0..t, plus a pointer to the assigned subtask and
-  earlier same-turn peers when an ``execute`` step is near-empty.
-* ``plain`` — prefix 0..t and nothing else.
+**Base assembly** (the ``policy``) governs how the prefix ``0..t`` is built:
+
+* ``typed`` (default) — plus a pointer to the assigned subtask and earlier
+  same-turn peers when an ``execute`` step is near-empty.
+* ``plain`` — prefix and nothing else.
 * ``hindsight`` — the whole trajectory as the shared prefix for every step. Not
-  a method: the ceiling figure, bounding how much of the gap to perfect
-  attribution is the judge's reasoning rather than the information the
-  prefix-conditional setting withholds by construction.
+  a method: the ceiling figure.
+
+**Lookahead** (the ``lookahead`` arm) governs what, if anything, is appended
+*after* step ``t``:
+
+* ``none`` (**W0**) — nothing. Prefix-conditional.
+* ``resp`` (**W+resp**) — the immediately following contiguous steps by *other*
+  agents, capped at 2: the realized response to step ``t``.
+* ``own`` (**W+own**) — W+resp plus the acting agent's own next appearance.
+
+W+resp exists because a delegation error's evidence is the assignee's downstream
+struggle, which same-turn peers cannot see. The near-empty-execute rescue is
+base assembly and stays on in every arm — it is not one of the arms.
+
+**Note on asymmetry.** ``resp`` and ``own`` deliberately look ahead, so those
+arms are *not* prefix-conditional. The lookahead is rendered into the readout
+segment rather than the shared prefix — it differs per step, so it cannot be
+cached — and every score row records which arm produced it.
 """
 
 from __future__ import annotations
@@ -30,6 +47,12 @@ from .client import JudgeClient
 from .prompts import preamble, readout, render_step
 
 POLICIES = ("typed", "plain", "hindsight")
+
+#: Lookahead arms. ``none`` is prefix-conditional; the other two are not.
+LOOKAHEAD = ("none", "resp", "own")
+
+#: How many following steps by other agents count as "the realized response".
+RESP_CAP = 2
 MAX_POINTER_CHARS = 800
 
 #: Pre-registered prefix budget, in characters. Measured in characters rather
@@ -78,6 +101,8 @@ class StepScore:
     subtask_pointer: bool = True
     peer_corroboration: bool = True
     prefix_window: int = 0
+    lookahead: str = "none"
+    n_lookahead: int = 0
     n_demoted: int = 0
     prefix_tokens: int = 0
     readout_tokens: int = 0
@@ -183,6 +208,38 @@ def pointers(
     return out
 
 
+def lookahead_steps(steps: Sequence[Step], t: int, mode: str) -> list[Step]:
+    """The steps appended after ``t`` under a lookahead arm.
+
+    ``resp``: the immediately following *contiguous* run of steps by other
+    agents, capped at ``RESP_CAP`` — contiguous because the point is the direct
+    realized response, not everything that ever followed.
+    ``own``: that, plus the acting agent's next appearance anywhere later.
+    """
+    if mode not in LOOKAHEAD:
+        raise ValueError(f"unknown lookahead {mode!r}; known: {LOOKAHEAD}")
+    if mode == "none":
+        return []
+    actor = steps[t].agent
+    out: list[Step] = []
+    for s in steps[t + 1 :]:
+        if s.agent == actor or len(out) >= RESP_CAP:
+            break
+        out.append(s)
+    if mode == "own":
+        nxt = next((s for s in steps[t + 1 :] if s.agent == actor), None)
+        if nxt is not None:
+            out.append(nxt)
+    return out
+
+
+def render_lookahead(window: Sequence[Step]) -> str:
+    if not window:
+        return ""
+    body = "".join(render_step(s)[0] for s in window)
+    return f"\n[what happened next — realized response]\n{body}"
+
+
 def untyped(steps: Sequence[Step]) -> tuple[Step, ...]:
     """Strip act types — the 'typing off' arm of E4."""
     return tuple(s.typed("unknown", s.type_source) for s in steps)
@@ -253,6 +310,7 @@ def score_record(
     subtask_pointer: bool = True,
     peer_corroboration: bool = True,
     prefix_window: int | None = None,
+    lookahead: str = "none",
     budget_chars: int = PREFIX_BUDGET_CHARS,
 ) -> TrajectoryScores:
     """Score every step of one trajectory against a shared, growing prefix.
@@ -331,7 +389,8 @@ def score_record(
                     + "\n"
                 )
 
-        prompt = augment + readout(step, kind)
+        window = lookahead_steps(steps, t, lookahead)
+        prompt = augment + render_lookahead(window) + readout(step, kind)
         if kind == "ptrue":
             p, trace = client.p_true(prompt)
             text = ""
@@ -357,6 +416,8 @@ def score_record(
                 subtask_pointer=subtask_pointer,
                 peer_corroboration=peer_corroboration,
                 prefix_window=prefix_window or 0,
+                lookahead=lookahead,
+                n_lookahead=len(window),
                 n_demoted=len(demoted),
                 prefix_tokens=trace.prefix_tokens,
                 readout_tokens=trace.readout_tokens,
@@ -406,6 +467,7 @@ def score_corpus(
     subtask_pointer: bool = True,
     peer_corroboration: bool = True,
     prefix_window: int | None = None,
+    lookahead: str = "none",
     budget_chars: int = PREFIX_BUDGET_CHARS,
     out_path: str | Path | None = None,
     progress: Callable[[int, int, TrajectoryScores], None] | None = None,
@@ -424,6 +486,7 @@ def score_corpus(
                 subtask_pointer=subtask_pointer,
                 peer_corroboration=peer_corroboration,
                 prefix_window=prefix_window,
+                lookahead=lookahead,
                 budget_chars=budget_chars,
             )
             results.append(ts)

@@ -76,6 +76,12 @@ def add_judge_args(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
         help="E5 arm: withhold same-turn peer steps (direction decision §10(c))",
     )
     p.add_argument(
+        "--lookahead",
+        default="none",
+        choices=("none", "resp", "own"),
+        help="evidence arm: none=W0 (prefix-conditional), resp=W+resp, own=W+own",
+    )
+    p.add_argument(
         "--prefix-window",
         type=int,
         help="E5 prefix-slice arm: judge step t against only the last N steps",
@@ -167,6 +173,7 @@ def score(
         subtask_pointer=not getattr(args, "no_subtask_pointer", False),
         peer_corroboration=not getattr(args, "no_peer_corroboration", False),
         prefix_window=getattr(args, "prefix_window", None),
+        lookahead=getattr(args, "lookahead", "none"),
         budget_chars=getattr(args, "prefix_budget_chars", PREFIX_BUDGET_CHARS),
         out_path=out_path,
     )
@@ -189,6 +196,7 @@ CONFIG_AXES = (
     "subtask_pointer",
     "peer_corroboration",
     "prefix_window",
+    "lookahead",
 )
 
 

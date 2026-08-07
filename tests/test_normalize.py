@@ -203,13 +203,32 @@ def test_choose_threshold_handles_a_single_class():
 
 
 def test_field_sanity_flags_a_constant_field(records):
-    flat = {
-        r.key: [_score(r.key, s.idx, 0.5, s.type_norm) for s in r.steps]
-        for r in records["hc"]
-    }
-    sanity = field_sanity(records["hc"], flat)
-    assert sanity["degenerate"]
+    # Enough steps in one cell to judge: a constant field is real degeneracy.
+    from masattr.normalize.apply import MIN_CELL_N
+
+    rec = records["hc"][0]
+    flat = {rec.key: [_score(rec.key, i, 0.5, "execute") for i in range(MIN_CELL_N + 5)]}
+    sanity = field_sanity([rec], flat)
     assert any("constant" in d for d in sanity["degenerate"])
+
+
+def test_a_cell_too_small_to_judge_is_not_called_degenerate(records):
+    # On a 10-file smoke `hc/final` holds one step per file; a single value
+    # trivially has zero variance and must not fail the gate on sample size.
+    rec = records["hc"][0]
+    tiny = {rec.key: [_score(rec.key, 0, 0.5, "final")]}
+    sanity = field_sanity([rec], tiny)
+    assert sanity["degenerate"] == []
+    assert sanity["cells"]["hc/final"]["undersized"] is True
+
+
+def test_saturation_is_flagged_at_any_size(records):
+    # A handful of steps pinned to the ends is a saturated readout, not a
+    # sampling accident, so size does not excuse it.
+    rec = records["hc"][0]
+    sat = {rec.key: [_score(rec.key, i, float(i % 2), "execute") for i in range(4)]}
+    sanity = field_sanity([rec], sat)
+    assert any("saturated" in d for d in sanity["degenerate"])
 
 
 def test_field_sanity_flags_saturation(records):

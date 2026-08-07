@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from ..record import FLAG_AGENT_STEP_MISMATCH, Record, RecordError
 from ..typing.normalize import collapse_orchestrator
@@ -263,3 +263,42 @@ def check_total_steps(
     if strict:
         raise AssertionError(msg)
     return [msg]
+
+
+def level_of(row: Mapping[str, Any]) -> tuple[str, str]:
+    """``(level, scale)`` from a source row.
+
+    The released JSON carries ``level`` on every AG file and on 30 of 58 HC
+    files, but in two vocabularies: numeric 1/2/3 and verbal Medium/Hard. The
+    scale is recorded so strata are formed within a scale — a stratum mixing
+    "2" with "Medium" would be an artifact, not a difficulty.
+    """
+    raw = row.get("level")
+    if raw in (None, ""):
+        return "", "absent"
+    text = str(raw).strip()
+    return text, ("numeric" if text.isdigit() else "verbal")
+
+
+def enrich_levels(records: Sequence[Record], directory: str | Path) -> list[Record]:
+    """Attach levels from a directory of their per-trajectory JSON.
+
+    The parquet release drops the column, so a run reading parquet has to pick
+    it up from their JSON, joined on ``question_ID``.
+    """
+    from dataclasses import replace as _replace
+
+    levels: dict[str, tuple[str, str]] = {}
+    for p in sorted(Path(directory).glob("*.json")):
+        try:
+            row = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        ident = row.get("question_ID")
+        if ident:
+            levels[str(ident)] = level_of(row)
+    out = []
+    for rec in records:
+        lv = levels.get(rec.file_id)
+        out.append(_replace(rec, level=lv[0], level_scale=lv[1]) if lv else rec)
+    return out

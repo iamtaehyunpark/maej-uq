@@ -13,10 +13,20 @@ Subprocess rather than import because their ``inference.py`` exposes only
                         --is_handcrafted {True,False}
                         --api_key ... --azure_endpoint ... --api_version ...
 
-Note it targets **Azure OpenAI**, so the gpt-4o arm needs an endpoint as well as
-a key. It also reads a *directory of per-trajectory JSON*, not the parquet, and
-writes results to ``outputs/{method}_{model}[_handcrafted].txt`` beside itself
-rather than to stdout.
+Their file still imports the Azure client, which is a stale 2025 dependency
+rather than a design choice. Rather than edit their tree, a shim is injected on
+``PYTHONPATH`` at the subprocess boundary: it makes ``openai.AzureOpenAI``
+construct a standard ``openai.OpenAI``, ignoring the endpoint and api-version
+arguments. Their prompt assembly, method logic, retry loop, and output contract
+stay byte-identical.
+
+The shim also records the concrete ``model`` string the API returns — the
+gpt-4o *snapshot*, not the alias — to a receipt file, because a drifted alias is
+the first thing to suspect if reproduction lands off the published numbers.
+
+It reads a *directory of per-trajectory JSON*, not the parquet, and writes
+results to ``outputs/{method}_{model}[_handcrafted].txt`` beside itself rather
+than to stdout.
 
 Their files are named by ordinal (``1.json``), while our records are keyed by
 ``question_ID``, so predictions are joined through the ``question_ID`` inside
@@ -38,6 +48,7 @@ for one.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -177,8 +188,6 @@ def repo_command(
     directory_path: str | Path,
     is_handcrafted: bool,
     api_key: str | None,
-    azure_endpoint: str | None,
-    api_version: str | None = None,
     device: str | None = None,
 ) -> list[str]:
     """Their documented command line. Credentials are passed explicitly."""
@@ -196,10 +205,6 @@ def repo_command(
     ]
     if api_key:
         cmd += ["--api_key", api_key]
-    if azure_endpoint:
-        cmd += ["--azure_endpoint", azure_endpoint]
-    if api_version:
-        cmd += ["--api_version", api_version]
     if device:
         cmd += ["--device", device]
     return cmd
@@ -213,9 +218,8 @@ def run_repo_subprocess(
     directory_path: str | Path,
     is_handcrafted: bool,
     api_key: str | None = None,
-    azure_endpoint: str | None = None,
-    api_version: str | None = None,
     device: str | None = None,
+    snapshot_receipt: str | Path | None = None,
     timeout: int = 60 * 60 * 6,
 ) -> str:
     """Run their script in its own directory and return stdout.
@@ -231,12 +235,15 @@ def run_repo_subprocess(
         directory_path=directory_path,
         is_handcrafted=is_handcrafted,
         api_key=api_key,
-        azure_endpoint=azure_endpoint,
-        api_version=api_version,
         device=device,
     )
+    env = dict(os.environ)
+    shim_dir = write_openai_shim(snapshot_receipt)
+    env["PYTHONPATH"] = os.pathsep.join([str(shim_dir), env.get("PYTHONPATH", "")]).strip(os.pathsep)
+    if snapshot_receipt:
+        env["MASATTR_SNAPSHOT_RECEIPT"] = str(snapshot_receipt)
     proc = subprocess.run(
-        cmd, cwd=script.parent, capture_output=True, text=True, timeout=timeout
+        cmd, cwd=script.parent, capture_output=True, text=True, timeout=timeout, env=env
     )
     if proc.returncode != 0:
         raise RuntimeError(
@@ -419,3 +426,69 @@ def parse_repo_output(text: str, ids: Mapping[str, str], subset: str) -> dict[st
             continue
         preds[f"{subset}/{ident}"] = (agent.group(1), int(step.group(1)))
     return preds
+
+
+# --- transport shim ---------------------------------------------------------
+
+_SHIM = '''"""Injected at the subprocess boundary; their tree is never edited.
+
+Their inference.py still imports the Azure client, a stale dependency rather
+than a design choice. This makes AzureOpenAI construct a standard OpenAI client
+and drops the endpoint/api-version arguments, and records the concrete model
+snapshot the API returns so a drifted alias is visible afterwards.
+"""
+import os
+
+import openai
+
+_receipt = os.environ.get("MASATTR_SNAPSHOT_RECEIPT")
+_seen = set()
+
+
+def _record(model):
+    if not _receipt or not model or model in _seen:
+        return
+    _seen.add(model)
+    with open(_receipt, "a", encoding="utf-8") as fh:
+        fh.write(model + "\\n")
+
+
+class _Completions:
+    def __init__(self, inner):
+        self._inner = inner
+
+    def create(self, *a, **kw):
+        resp = self._inner.create(*a, **kw)
+        _record(getattr(resp, "model", None))
+        return resp
+
+
+class _Chat:
+    def __init__(self, inner):
+        self._inner = inner
+        self.completions = _Completions(inner.completions)
+
+
+class _Client:
+    def __init__(self, *a, **kw):
+        for drop in ("azure_endpoint", "api_version", "azure_deployment"):
+            kw.pop(drop, None)
+        self._inner = openai.OpenAI(*a, **kw)
+        self.chat = _Chat(self._inner.chat)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+openai.AzureOpenAI = _Client
+'''
+
+
+def write_openai_shim(receipt: str | Path | None = None) -> Path:
+    """Write the shim to a temp dir and return it, for PYTHONPATH injection."""
+    import tempfile
+
+    d = Path(tempfile.mkdtemp(prefix="masattr_shim_"))
+    (d / "sitecustomize.py").write_text(_SHIM, encoding="utf-8")
+    _ = receipt
+    return d

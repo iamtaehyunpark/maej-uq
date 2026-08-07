@@ -54,10 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--api-key-file",
         help="read the key from a file instead, so it stays out of shell history",
     )
-    p.add_argument(
-        "--azure-endpoint",
-        help="their inference.py targets Azure OpenAI, so the gpt-4o arm needs this too",
-    )
+
     p.add_argument("--device")
     p.add_argument("--limit", type=int, help="first N files per subset (smoke runs)")
     return p
@@ -93,6 +90,8 @@ def main(argv=None) -> int:
                 )
             ids = id_map(directory)
             for method in args.methods:
+                receipt = Path(args.out_dir) / f"snapshot_{method}_{subset}.txt"
+                receipt.parent.mkdir(parents=True, exist_ok=True)
                 run_repo_subprocess(
                     args.repo_path,
                     method=method,
@@ -100,9 +99,17 @@ def main(argv=None) -> int:
                     directory_path=directory,
                     is_handcrafted=(subset == "hc"),
                     api_key=args.api_key,
-                    azure_endpoint=args.azure_endpoint,
                     device=args.device,
+                    snapshot_receipt=receipt,
                 )
+                snapshots = (
+                    sorted(set(receipt.read_text().split())) if receipt.exists() else []
+                )
+                if snapshots:
+                    manifest.note(
+                        f"{method}/{subset}: API returned model snapshot(s) "
+                        + ", ".join(snapshots)
+                    )
                 out_file = output_path(
                     args.repo_path,
                     method=method,
@@ -136,6 +143,7 @@ def main(argv=None) -> int:
                         "n": len(preds),
                         "n_gold": len(gold),
                         "output_file": str(out_file),
+                        "model_snapshots": snapshots,
                         "scores": scored,
                     }
                 )

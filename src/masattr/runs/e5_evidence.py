@@ -18,7 +18,13 @@ from ._shared import add_attribution_args, add_common, run_config_tables
 #: E5 ablates the evidence, and the evidence has four switches: which policy,
 #: whether the assigned-subtask pointer is shown, whether same-turn peers are,
 #: and how much prefix is visible. Varying any one of them is an E5 arm.
-EVIDENCE_AXES = ("policy", "subtask_pointer", "peer_corroboration", "prefix_window")
+EVIDENCE_AXES = (
+    "policy",
+    "lookahead",
+    "subtask_pointer",
+    "peer_corroboration",
+    "prefix_window",
+)
 
 
 def build_parser() -> argparse.ArgumentParser:

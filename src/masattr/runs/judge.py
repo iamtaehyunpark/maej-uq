@@ -44,6 +44,8 @@ def main(argv=None) -> int:
         tag += "_nopeer"
     if args.prefix_window:
         tag += f"_win{args.prefix_window}"
+    if args.lookahead != "none":
+        tag += f"_{args.lookahead}"
 
     summary: dict = {}
     for subset, recs in records.items():
@@ -65,6 +67,7 @@ def main(argv=None) -> int:
             subtask_pointer=not args.no_subtask_pointer,
             peer_corroboration=not args.no_peer_corroboration,
             prefix_window=args.prefix_window,
+            lookahead=args.lookahead,
             budget_chars=args.prefix_budget_chars,
             out_path=out_path,
             progress=progress,

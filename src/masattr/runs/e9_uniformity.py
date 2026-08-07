@@ -2,8 +2,15 @@
 
 Recomputed from E1's saved predictions: is the primary rule uniformly good, or
 is it carried by one stratum? Accuracy is broken out by the gold step's act
-type, by orchestrator vs worker, by subset, and by trajectory length — i.e.
-**function × role, stratified by subset**.
+type, by orchestrator vs worker, by subset, by trajectory length, and — where
+the release carries it — by task difficulty: **function × role × subset ×
+level**.
+
+The level axis is formed *within a scale*. The released column holds two
+vocabularies (numeric 1/2/3 on uuid-keyed files, verbal Medium/Hard on
+hex64-keyed ones), and a stratum mixing "2" with "Medium" would be an artifact
+rather than a difficulty. Files without a level are reported as their own
+bucket, not silently folded into one.
 
 There is no domain axis. The benchmark carries no domain labels and the
 `question_ID` shape split is a source split rather than a topical one, so the
@@ -25,6 +32,7 @@ from pathlib import Path
 from ..attribute.rules import PRIMARY
 from ..eval.ci import bootstrap_ci
 from ..eval.scorers import exact_agent, exact_step
+from ..loaders._common import enrich_levels
 from ..typing.normalize import is_orchestrator
 from ._shared import add_common, emit, flatten, load_records, open_manifest
 
@@ -35,6 +43,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = add_common(argparse.ArgumentParser(prog="masattr e9", description=__doc__))
     p.add_argument("--e1-results", required=True, help="results.json written by E1")
     p.add_argument("--method", default=PRIMARY)
+    p.add_argument(
+        "--levels-from",
+        help="their per-trajectory JSON directory, to pick up the level column "
+        "the parquet drops: --levels-from alg=<dir> hc=<dir>",
+        nargs="+",
+        default=[],
+    )
     return p
 
 
@@ -48,7 +63,12 @@ def _length_bin(n: int) -> str:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     manifest = open_manifest("e9_uniformity", args)
-    records = {r.key: r for r in flatten(load_records(args))}
+    loaded = load_records(args)
+    for kv in args.levels_from:
+        subset, _, directory = kv.partition("=")
+        if subset in loaded and directory:
+            loaded[subset] = enrich_levels(loaded[subset], directory)
+    records = {r.key: r for r in flatten(loaded)}
     blob = json.loads(Path(args.e1_results).read_text(encoding="utf-8"))
 
     strata: dict[str, dict[str, list[tuple[bool, bool]]]] = {
@@ -56,6 +76,7 @@ def main(argv=None) -> int:
         "gold_role": defaultdict(list),
         "trajectory_length": defaultdict(list),
         "subset": defaultdict(list),
+        "level": defaultdict(list),
     }
 
     n_used = 0
@@ -78,6 +99,9 @@ def main(argv=None) -> int:
             ].append(hit)
             strata["trajectory_length"][_length_bin(rec.n_steps)].append(hit)
             strata["subset"][rec.subset].append(hit)
+            strata["level"][
+                f"{rec.level_scale}:{rec.level}" if rec.level else "absent"
+            ].append(hit)
         _ = label
 
     if not n_used:

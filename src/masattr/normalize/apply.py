@@ -24,6 +24,12 @@ SATURATION_FRACTION = 0.95
 #: Below this spread a type's raw scores are effectively constant.
 DEGENERATE_SD = 1e-3
 
+#: A cell needs at least this many steps before "constant" or "near-binary"
+#: means anything. On a 10-file smoke, ``hc/final`` holds one step per file — a
+#: single value trivially has zero variance, and calling that a degenerate field
+#: would fail the gate for a reason that is purely sample size.
+MIN_CELL_N = 20
+
 
 def apply_folds(
     scores_by_file: Mapping[str, list],
@@ -121,12 +127,17 @@ def field_sanity(
                 [p for p, _ in pairs], [y for _, y in pairs]
             )
         problems = []
-        if cell["sd"] < DEGENERATE_SD:
-            problems.append("constant")
+        if cell["n"] >= MIN_CELL_N:
+            if cell["sd"] < DEGENERATE_SD:
+                problems.append("constant")
+            if cell["n_distinct"] <= 2:
+                problems.append("near-binary")
+        else:
+            cell["undersized"] = True
+        # Saturation is judged at any size: a handful of steps all pinned to 0
+        # or 1 is still a saturated readout, not a sampling accident.
         if sat >= SATURATION_FRACTION:
             problems.append("saturated")
-        if cell["n_distinct"] <= 2 and cell["n"] > 10:
-            problems.append("near-binary")
         if problems:
             cell["degenerate"] = problems
             out["degenerate"].append(f"{subset}/{type_norm}: {', '.join(problems)}")
@@ -148,10 +159,17 @@ def render_field(sanity: Mapping[str, Any]) -> str:
             f"{c['median']:.3f} | {c['p95']:.3f} | {c['saturated_fraction']:.1%} | "
             f"{c['n_distinct']} | {'—' if auc is None or auc != auc else f'{auc:.3f}'} |"
         )
+    undersized = [k for k, c in sanity["cells"].items() if c.get("undersized")]
     if sanity["degenerate"]:
         lines += ["", "**Degenerate cells:** " + "; ".join(sanity["degenerate"])]
     else:
         lines += ["", "No degenerate cells: every cell varies and none is saturated."]
+    if undersized:
+        lines += [
+            "",
+            f"> Too few steps to judge variation (n<{MIN_CELL_N}), reported but not "
+            f"gated on: {', '.join(undersized)}.",
+        ]
     lines += [
         "",
         "> AUROC here is against *derived* step labels, not annotations — it says "

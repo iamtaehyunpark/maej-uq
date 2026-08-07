@@ -5,13 +5,15 @@ Ten seeded files, three evidence arms, both GT settings. The question is not
 or structureless score field cannot be localized by any rule, and finding that
 out after a full 50k-assessment pass would be an expensive way to learn it.
 
-The three arms, in this harness's switches:
+The three arms differ **only** in the lookahead window appended after step
+``t``. Base evidence assembly — including the near-empty-execute rescue — is
+identical in all three; conflating the two was a real bug once.
 
-===========  ======================================================
-W0           ``--policy plain`` — prefix only, no augmentation
-W+resp       ``typed`` with peer corroboration, no subtask pointer
-W+own        ``typed`` with the subtask pointer, no peer corroboration
-===========  ======================================================
+===========  ==========================================================
+W0           no lookahead. Prefix-conditional.
+W+resp       the following contiguous steps by other agents, capped at 2
+W+own        W+resp plus the acting agent's own next appearance
+===========  ==========================================================
 
 Output is one curve per file per arm — the per-step score against step index,
 with the annotated mistake step marked — as ASCII in the report and as CSV for
@@ -35,12 +37,9 @@ from ..judge.score import cost_summary, score_corpus
 from ..normalize.apply import field_sanity, render_field
 from ._shared import add_common, add_judge_args, emit, flatten, load_records, open_manifest, resolve_model
 
-#: The three evidence arms, as (name, policy, subtask_pointer, peer_corroboration).
-ARMS = (
-    ("W0", "plain", False, False),
-    ("W+resp", "typed", False, True),
-    ("W+own", "typed", True, False),
-)
+#: The three evidence arms, as (name, lookahead). Base assembly is ``typed``
+#: throughout, so the arms isolate the lookahead window and nothing else.
+ARMS = (("W0", "none"), ("W+resp", "resp"), ("W+own", "own"))
 
 BLOCKS = " ▁▂▃▄▅▆▇█"
 
@@ -120,7 +119,7 @@ def main(argv=None) -> int:
     rows_csv: list[dict] = []
     all_sanity: dict = {}
 
-    for arm, policy, subtask, peers in ARMS:
+    for arm, lookahead in ARMS:
         for with_gt in (False, True):
             tag = f"{arm.replace('+', '_')}_{'gt' if with_gt else 'nogt'}"
             path = scores_dir / f"smoke__{tag}.jsonl"
@@ -128,11 +127,10 @@ def main(argv=None) -> int:
                 records,
                 client,
                 kind=args.readout,
-                policy=policy,
+                policy=args.policy,
                 with_gt=with_gt,
                 use_types=not args.no_types,
-                subtask_pointer=subtask,
-                peer_corroboration=peers,
+                lookahead=lookahead,
                 budget_chars=args.prefix_budget_chars,
                 out_path=path,
             )

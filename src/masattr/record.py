@@ -75,6 +75,12 @@ class Record:
     label_mistake_step: int
     label_mistake_reason: str = ""
     flags: tuple[str, ...] = ()
+    #: Task difficulty, where the release carries it. Two scales share this one
+    #: column — numeric 1/2/3 on uuid-keyed files, verbal Medium/Hard on
+    #: hex64-keyed ones — so ``level_scale`` travels with it and strata are
+    #: formed within a scale, never across.
+    level: str = ""
+    level_scale: str = "absent"
     dataset: str = "whowhen"
     source_file: str = ""
 
@@ -184,6 +190,8 @@ class Record:
             label_mistake_step=int(d["label_mistake_step"]),
             label_mistake_reason=d.get("label_mistake_reason", ""),
             flags=tuple(d.get("flags", ())),
+            level=str(d.get("level", "")),
+            level_scale=d.get("level_scale", "absent"),
             source_file=d.get("source_file", ""),
         )
 
