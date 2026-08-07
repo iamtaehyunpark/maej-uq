@@ -78,8 +78,10 @@ reproducible from `(commit, manifest)`.
 
 Two guards are deliberate refusals rather than defaults: `criteria.json` must be
 marked `registered` before any attribution number is computed — the changepoint
-fallback condition is part of the primary rule's definition — and `judge.json`
-must be `confirmed` before any reported run.
+fallback condition is part of the primary rule's definition — and `judge.json` carries a
+status **per role**, so a run is blocked only by the roles it actually uses.
+Declared model families are re-resolved from the ids and cross-checked, so the
+disjointness constraints cannot be satisfied by a mislabelled declaration.
 
 The primary rule itself is fixed by `specs/rule_directive.md`, whose hash is
 logged as `rule_provenance` on every run. No experiment selects it.

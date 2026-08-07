@@ -21,7 +21,7 @@ in [`BUILD_REPORT.md`](BUILD_REPORT.md).
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/python -m pytest        # 152 tests, no data / GPU / network required
+.venv/bin/python -m pytest        # 155 tests, no data / GPU / network required
 ```
 
 Extras: `.[judge]` for the local-LM judge (torch + transformers), `.[openai]`
@@ -65,8 +65,8 @@ record-level anomalies. The five file ids are logged in every run manifest.
 masattr freeze                                     # hash prompts, type rules, and both spec files
 masattr load --assert                              # 126 / 58 / 4092 steps / 3+3 flagged
 masattr typecheck --audit-out audit.json           # rules vs HC parsed types, ≥90% gate
-masattr retype --splitter hf:<id> --judge hf:<id>  # gate + apply the plan/delegate splitter
-masattr judge --judge hf:<id>                      # × readout × policy × GT setting
+masattr retype --splitter type_classifier          # gate + apply the plan/delegate splitter
+masattr judge --judge judge_primary                # × readout × policy × GT setting
 masattr e0 --scores runs/scores/*.jsonl            # field sanity, threshold stability, primary rule
 masattr e1 --scores runs/scores/*.jsonl --folds runs/normalize/folds.json \
            --decision runs/out/e0_decision.json
@@ -119,10 +119,13 @@ scored 0.994 by deleting the delegation-error prediction; tuning the rules on
 HC's ledger markers would license AG typing on HC's idiom, which is the
 circularity the gate exists to prevent.
 
-**Two family-disjointness constraints, checked in code.** The judge must be
-disjoint from any labeling judge, and the type-classifier must be disjoint from
-the judge — typing conditions the judge's evidence policy. `masattr retype`
-refuses a same-family splitter, and every manifest logs the resolved families.
+**Family disjointness is verified, not declared.** `specs/judge.json` names a
+model and a family per role; the family is re-resolved from the id and a
+disagreement fails the run, because every downstream disjointness check would
+otherwise be made against a fiction. All three pairs are checked — the type
+classifier against *both* judges, and the two judges against each other.
+Currently: `judge_primary` qwen, `judge_secondary` llama, `type_classifier`
+gemma.
 
 **Prefix sharing is structural.** The judge client's shared prefix only grows,
 so a `T`-step trajectory costs `O(T)` prefix tokens. HC reaches 130 steps; the
@@ -194,10 +197,12 @@ the live prompts and type rules still match `specs/` before it starts.
   `correct = idx < mistake_step`, excluding the post-mistake tail rather than
   guessing it. The `point` policy keeps every step and asserts the tail is fine.
   Documented at the top of `normalize/fit.py`; both are pre-registered.
-- **Two spec files start as drafts on purpose.** `specs/e0_criteria.json` must
-  be `registered` before E0 runs, and `specs/judge.json` must be `confirmed`
-  before any reported run. Both are owner-set; the code refuses rather than
-  defaults.
+- **Owner-set spec files gate the runs.** `specs/criteria.json` must be
+  `registered` before any attribution number — the changepoint fallback
+  condition is part of the primary rule. `specs/judge.json` carries a status
+  **per role**, so a run is blocked only by the roles it uses: the primary judge
+  is confirmed, while the secondary judge and the type classifier are still
+  drafts and any run that would call them stops.
 - **The surrogate baseline is a surrogate.** Frozen logs do not carry the
   generating model's distributions. A proxy LM's logprob and entropy are the
   closest computable thing, they are uncalibrated, and they are expected to be

@@ -364,9 +364,56 @@ def test_e4_pooled_normalization_arm(data_root, tmp_path, capsys):
     assert res["typed_thresholds"] is False
 
 
-def test_judge_spec_starts_as_a_draft():
+def test_judge_roles_are_declared_and_pairwise_disjoint():
     from masattr import specs
 
-    assert specs.judge_spec()["status"] == "draft"
+    assert specs.check_families() == []
+    assert specs.role("judge_primary")["status"] == "confirmed"
+    assert specs.client_spec("judge_primary") == "hf:Qwen/Qwen3.6-35B-A3B"
+
+
+def test_a_draft_role_refuses_to_resolve():
+    from masattr.runs._shared import resolve_model
+
+    # The secondary judge and the type classifier are still drafts, so any run
+    # that would actually call them stops.
+    for role in ("judge_secondary", "type_classifier"):
+        with pytest.raises(RuntimeError, match="not\\s+'confirmed'"):
+            resolve_model(role)
+    assert resolve_model("judge_primary") == "hf:Qwen/Qwen3.6-35B-A3B"
+    assert resolve_model("mock") == "mock"
+    assert resolve_model("hf:some/other-model") == "hf:some/other-model"
+
+
+def test_declared_family_is_verified_not_trusted(tmp_path, monkeypatch):
+    import json as _json
+
+    from masattr import specs
+
+    blob = specs.judge_spec()
+    blob["judge_primary"] = {**blob["judge_primary"], "family": "llama"}
+    path = tmp_path / "judge.json"
+    path.write_text(_json.dumps(blob))
+    monkeypatch.setattr(specs, "JUDGE_FILE", path)
+    problems = specs.check_families(strict=False)
+    assert any("resolves to 'qwen'" in p for p in problems)
+
+
+def test_a_same_family_type_classifier_is_caught(tmp_path, monkeypatch):
+    import json as _json
+
+    from masattr import specs
+
+    blob = specs.judge_spec()
+    blob["type_classifier"] = {
+        "id": "Qwen/Qwen3-8B",
+        "family": "qwen",
+        "status": "confirmed",
+    }
+    path = tmp_path / "judge.json"
+    path.write_text(_json.dumps(blob))
+    monkeypatch.setattr(specs, "JUDGE_FILE", path)
+    problems = specs.check_families(strict=False)
+    assert any("type_classifier" in p and "both family" in p for p in problems)
     with pytest.raises(RuntimeError, match="confirmed"):
         specs.require_status("judge", specs.judge_spec(), "confirmed", "why")

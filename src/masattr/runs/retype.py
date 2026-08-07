@@ -26,16 +26,29 @@ import argparse
 import json
 from pathlib import Path
 
+from .. import specs
 from ..record import write_jsonl
 from ..typing.refine import build_splitter, refine_records, validate_splitter
-from ._shared import add_common, load_records, open_manifest
+from ._shared import add_common, load_records, open_manifest, resolve_model
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = add_common(argparse.ArgumentParser(prog="masattr retype", description=__doc__))
-    p.add_argument("--splitter", default="mock", help="mock | hf:<model_id>")
-    p.add_argument("--judge", default="", help="the primary judge this must be disjoint from")
-    p.add_argument("--sensitivity-judge", default="", help="the second judge family, likewise")
+    p.add_argument(
+        "--splitter",
+        default="mock",
+        help="mock | hf:<model_id> | type_classifier (from specs/judge.json)",
+    )
+    p.add_argument(
+        "--judge",
+        default="judge_primary",
+        help="the primary judge this must be disjoint from",
+    )
+    p.add_argument(
+        "--sensitivity-judge",
+        default="judge_secondary",
+        help="the second judge family, likewise",
+    )
     p.add_argument("--device")
     p.add_argument("--out-cache", help="directory to write retyped records into")
     p.add_argument(
@@ -49,10 +62,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     manifest = open_manifest("retype", args)
+    splitter_spec = resolve_model(args.splitter)
+    # The judges only have to be *named* here, to be checked disjoint from the
+    # splitter; this run does not call them, so a draft secondary is no blocker.
+    judge = specs.role_id(args.judge) or args.judge
+    sensitivity = specs.role_id(args.sensitivity_judge) or args.sensitivity_judge
     manifest.record_models(
-        type_classifier=args.splitter,
-        judge=args.judge,
-        sensitivity_judge=args.sensitivity_judge,
+        type_classifier=splitter_spec, judge=judge, sensitivity_judge=sensitivity
     )
 
     records = load_records(args)
@@ -63,9 +79,9 @@ def main(argv=None) -> int:
         )
 
     splitter = build_splitter(
-        args.splitter,
-        judge_model=args.judge,
-        sensitivity_judge=args.sensitivity_judge,
+        splitter_spec,
+        judge_model=judge,
+        sensitivity_judge=sensitivity,
         device=args.device,
         seed=args.seed,
     )
@@ -81,7 +97,7 @@ def main(argv=None) -> int:
     (out / "retype_gate.md").write_text(report.render() + "\n", encoding="utf-8")
     manifest.results = {"gate": report.to_dict()}
 
-    if args.splitter == "mock":
+    if splitter_spec == "mock":
         manifest.note("splitter=mock: a stand-in, never a reported number")
 
     if not report.passes and not args.force:
@@ -96,7 +112,7 @@ def main(argv=None) -> int:
 
     applied = 0
     if "alg" in records:
-        if args.splitter == "mock" and not args.force:
+        if splitter_spec == "mock" and not args.force:
             print(
                 "\nRefusing to write AG types from the mock splitter; pass a real "
                 "--splitter, or --force for a dry run."

@@ -61,8 +61,89 @@ def rule_provenance() -> str:
     return sha(rule_directive())
 
 
+#: Roles that must be family-disjoint from each other, and the reason.
+DISJOINT_PAIRS = (
+    ("type_classifier", "judge_primary"),
+    ("type_classifier", "judge_secondary"),
+    ("judge_primary", "judge_secondary"),
+)
+
+ROLES = ("judge_primary", "judge_secondary", "type_classifier")
+
+
 def judge_spec() -> dict[str, Any]:
     return _read_json(JUDGE_FILE)
+
+
+def role(name: str) -> dict[str, Any]:
+    """One role's ``{id, family, status}``, or empty if undeclared."""
+    entry = judge_spec().get(name)
+    return dict(entry) if isinstance(entry, dict) else {}
+
+
+def role_id(name: str) -> str:
+    return str(role(name).get("id", ""))
+
+
+def client_spec(name: str) -> str:
+    """The role's id as a client spec. Bare HF ids are prefixed."""
+    ident = role_id(name)
+    if not ident:
+        raise RuntimeError(f"specs/judge.json declares no id for role {name!r}")
+    return ident if ":" in ident else f"hf:{ident}"
+
+
+def require_role(name: str) -> dict[str, Any]:
+    """Refuse to use a role that has not been confirmed.
+
+    Status is per role on purpose: the secondary judge and the type classifier
+    are decided independently of the primary, and a run should be blocked only
+    by the roles it actually uses.
+    """
+    entry = role(name)
+    if not entry:
+        raise RuntimeError(f"specs/judge.json declares no role {name!r}; known: {ROLES}")
+    status = str(entry.get("status", "draft")).lower()
+    if status != "confirmed":
+        raise RuntimeError(
+            f"role {name!r} ({entry.get('id')!r}) is marked {status!r}, not "
+            "'confirmed'. Set its status in specs/judge.json once the checkpoint "
+            "is decided; a reported number should not rest on a draft identity."
+        )
+    return entry
+
+
+def check_families(*, strict: bool = True) -> list[str]:
+    """Verify declared families against the resolver, then the disjointness pairs.
+
+    The declared ``family`` is a claim, not evidence. If it disagrees with what
+    the id actually resolves to, every disjointness check downstream is being
+    made against a fiction.
+    """
+    from ..models import check_disjoint, family_of
+
+    problems: list[str] = []
+    for name in ROLES:
+        entry = role(name)
+        ident = entry.get("id")
+        if not ident:
+            continue
+        declared = str(entry.get("family", "")).lower()
+        resolved = family_of(str(ident))
+        if declared and declared != resolved:
+            problems.append(
+                f"{name}: declares family {declared!r} but {ident!r} resolves to "
+                f"{resolved!r}"
+            )
+    for a, b in DISJOINT_PAIRS:
+        ia, ib = role_id(a), role_id(b)
+        if ia and ib:
+            problem = check_disjoint(a, ia, b, ib, strict=False)
+            if problem:
+                problems.append(problem)
+    if problems and strict:
+        raise RuntimeError("specs/judge.json: " + "; ".join(problems))
+    return problems
 
 
 def require_status(name: str, blob: dict[str, Any], wanted: str, why: str) -> None:
@@ -105,14 +186,15 @@ def freeze() -> dict[str, str]:
 
 def verify(*, strict: bool = True) -> list[str]:
     """Compare live artifacts to the frozen ones. Returns the list of drifts."""
+    problems = check_families(strict=strict)
     if not HASHES_FILE.exists():
         msg = f"no frozen hashes at {HASHES_FILE}; run `masattr freeze` before any experiment"
         if strict:
             raise RuntimeError(msg)
-        return [msg]
+        return problems + [msg]
     frozen = json.loads(HASHES_FILE.read_text(encoding="utf-8"))
     live = hashes()
-    drift = [
+    drift = problems + [
         f"{k}: frozen {frozen.get(k)} != live {v}" for k, v in live.items() if frozen.get(k) != v
     ]
     if drift and strict:

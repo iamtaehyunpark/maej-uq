@@ -1,18 +1,32 @@
 {
-  "status": "draft",
   "_comment": [
-    "Judge and type-classifier identities, and the family-disjointness record.",
-    "STATUS MUST BE 'confirmed' BEFORE ANY REPORTED RUN. Owner sets the ids.",
-    "Rationale is recorded on standalone merits: open weights with per-token",
-    "logit access (required for the single-token readout), mid-scale so a",
-    "130-step trajectory fits the prefix budget on available hardware, and cheap",
-    "enough to run every ablation arm over both subsets.",
-    "The type-classifier must be family-disjoint from BOTH judge families:",
-    "typing conditions the judge's evidence policy, so any shared family closes",
-    "a loop."
+    "Model identities per role. Each role carries its own status, and a run",
+    "refuses to use a role that is not 'confirmed' — so the secondary judge and",
+    "the type classifier can be decided independently of the primary.",
+    "",
+    "Rationale on standalone merits: open weights with per-token logit access",
+    "(required for the single-token readout), mid scale so a 130-step trajectory",
+    "fits the prefix budget on available hardware, and cheap enough to run every",
+    "ablation arm over both subsets.",
+    "",
+    "The declared family is checked against the resolver, not trusted: a",
+    "mislabelled family would silently defeat the disjointness constraints.",
+    "The type classifier must be disjoint from BOTH judge families, because",
+    "typing conditions the evidence policy either judge reads."
   ],
-  "primary_judge": "hf:Qwen3.6-35B-A3B",
-  "sensitivity_judge": "",
-  "type_classifier": "",
-  "labeling_judge": ""
+  "judge_primary": {
+    "id": "Qwen/Qwen3.6-35B-A3B",
+    "family": "qwen",
+    "status": "confirmed"
+  },
+  "judge_secondary": {
+    "id": "meta-llama/Llama-3.1-70B-Instruct",
+    "family": "llama",
+    "status": "draft"
+  },
+  "type_classifier": {
+    "id": "google/gemma-3-27b-it",
+    "family": "gemma",
+    "status": "draft"
+  }
 }

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from ..judge.client import build_client
 from ..judge.score import cost_summary, score_corpus
-from ._shared import add_common, add_judge_args, load_records, open_manifest
+from ._shared import add_common, add_judge_args, load_records, open_manifest, resolve_model
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,13 +27,14 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     manifest = open_manifest("judge", args)
     records = load_records(args)
-    manifest.record_models(judge=args.judge)
+    judge_spec = resolve_model(args.judge)
+    manifest.record_models(judge=judge_spec)
     manifest.record_anomalies([r for recs in records.values() for r in recs])
-    client = build_client(args.judge, device=args.device, seed=args.seed)
+    client = build_client(judge_spec, device=args.device, seed=args.seed)
 
     scores_dir = Path(args.scores_dir)
     scores_dir.mkdir(parents=True, exist_ok=True)
-    tag = f"{args.judge.replace(':', '_')}_{args.readout}_{args.policy}"
+    tag = f"{judge_spec.replace(':', '_').replace('/', '-')}_{args.readout}_{args.policy}"
     tag += "_gt" if args.with_gt else "_nogt"
     if args.no_types:
         tag += "_notypes"

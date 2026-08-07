@@ -54,7 +54,12 @@ def add_common(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
 
 
 def add_judge_args(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
-    p.add_argument("--judge", default="mock", help="mock | hf:<model_id>")
+    p.add_argument(
+        "--judge",
+        default="mock",
+        help="mock | hf:<model_id> | a role from specs/judge.json "
+        "(judge_primary, judge_secondary)",
+    )
     p.add_argument("--device")
     p.add_argument("--readout", default="ptrue", choices=("ptrue", "verbalized", "binary"))
     p.add_argument("--policy", default="typed", choices=("typed", "plain", "hindsight"))
@@ -82,6 +87,22 @@ def add_judge_args(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
         help="pre-registered truncation budget; over it, old execute detail is demoted",
     )
     return p
+
+
+def resolve_model(value: str) -> str:
+    """Turn a role name from ``specs/judge.json`` into a client spec.
+
+    Anything that is not a declared role passes through unchanged, so ``mock``
+    and explicit ``hf:`` ids still work. A role must be ``confirmed`` before it
+    resolves — a reported number should not rest on a draft identity.
+    """
+    if not value:
+        return value
+    alias = {"primary": "judge_primary", "secondary": "judge_secondary"}.get(value, value)
+    if alias in specs.ROLES:
+        specs.require_role(alias)
+        return specs.client_spec(alias)
+    return value
 
 
 def open_manifest(name: str, args: argparse.Namespace) -> Manifest:
@@ -131,7 +152,11 @@ def score(
     out_path: str | Path | None = None,
 ) -> dict[str, list[StepScore]]:
     """Score a corpus, defaulting every axis to the CLI args."""
-    client = build_client(judge or args.judge, device=getattr(args, "device", None), seed=args.seed)
+    client = build_client(
+        resolve_model(judge or args.judge),
+        device=getattr(args, "device", None),
+        seed=args.seed,
+    )
     results = score_corpus(
         records,
         client,
