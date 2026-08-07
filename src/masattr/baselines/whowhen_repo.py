@@ -189,10 +189,16 @@ def repo_command(
     is_handcrafted: bool,
     api_key: str | None,
     device: str | None = None,
+    python_exe: str | None = None,
 ) -> list[str]:
-    """Their documented command line. Credentials are passed explicitly."""
+    """Their documented command line. Credentials are passed explicitly.
+
+    ``python_exe`` because their script needs their own dependencies (openai,
+    transformers, dotenv), which live in a different environment from this
+    package — this one requires 3.10+ and theirs does not have it.
+    """
     cmd = [
-        sys.executable,
+        python_exe or sys.executable,
         str(script.name),
         "--method",
         method,
@@ -222,6 +228,7 @@ def run_repo_subprocess(
     snapshot_receipt: str | Path | None = None,
     base_url: str | None = None,
     model_rewrite: str | None = None,
+    python_exe: str | None = None,
     timeout: int = 60 * 60 * 6,
 ) -> str:
     """Run their script in its own directory and return stdout.
@@ -238,6 +245,7 @@ def run_repo_subprocess(
         is_handcrafted=is_handcrafted,
         api_key=api_key,
         device=device,
+        python_exe=python_exe,
     )
     env = dict(os.environ)
     shim_dir = write_openai_shim(snapshot_receipt)

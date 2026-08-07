@@ -55,6 +55,11 @@ def build_parser() -> argparse.ArgumentParser:
         "prompts and logic, our judge",
     )
     p.add_argument("--served-model", help="model name to rewrite their calls to")
+    p.add_argument(
+        "--repo-python",
+        help="interpreter with their dependencies; theirs is a different "
+        "environment from this package's",
+    )
     p.add_argument("--api-key", help="passed explicitly on the command line")
     p.add_argument(
         "--api-key-file",
@@ -109,6 +114,7 @@ def main(argv=None) -> int:
                     snapshot_receipt=receipt,
                     base_url=args.served_base_url,
                     model_rewrite=args.served_model,
+                    python_exe=args.repo_python,
                 )
                 snapshots = (
                     sorted(set(receipt.read_text().split())) if receipt.exists() else []
