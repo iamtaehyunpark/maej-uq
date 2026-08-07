@@ -594,3 +594,29 @@ def test_openai_shim_is_valid_and_redirects_azure(tmp_path):
     assert "openai.AzureOpenAI = _Client" in src
     assert "azure_endpoint" in src and "api_version" in src
     assert "MASATTR_SNAPSHOT_RECEIPT" in src
+
+
+def test_smoke_sample_covers_the_required_cases(records):
+    from masattr.runs.smoke import REQUIRED, sample_files
+    from masattr.typing.normalize import is_orchestrator
+
+    pool = records["alg"] + records["hc"]
+    picked, covered = sample_files(pool, 4, seed=0)
+    assert len(picked) == 4
+    assert set(covered) == {name for name, _, _ in REQUIRED}
+    # Where a case exists in the corpus it must be represented, not left to luck.
+    for name, subset, pred in REQUIRED:
+        exists = any(r.subset == subset and pred(r) for r in pool)
+        if exists:
+            assert covered[name], f"{name} exists in the corpus but was not sampled"
+            assert covered[name] in {r.key for r in picked}
+    _ = is_orchestrator
+
+
+def test_smoke_sample_is_deterministic(records):
+    from masattr.runs.smoke import sample_files
+
+    pool = records["alg"] + records["hc"]
+    a, _ = sample_files(pool, 4, seed=0)
+    b, _ = sample_files(pool, 4, seed=0)
+    assert [r.key for r in a] == [r.key for r in b]

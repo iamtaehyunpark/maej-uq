@@ -35,6 +35,7 @@ from pathlib import Path
 from ..judge.client import build_client
 from ..judge.score import cost_summary, score_corpus
 from ..normalize.apply import field_sanity, render_field
+from ..typing.normalize import is_orchestrator
 from ._shared import add_common, add_judge_args, emit, flatten, load_records, open_manifest, resolve_model
 
 #: The three evidence arms, as (name, lookahead). Base assembly is ``typed``
@@ -51,22 +52,57 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def sample_files(records, n: int, seed: int) -> list:
-    """Seeded sample, balanced across subsets so neither idiom is unrepresented."""
+#: Composition the smoke must cover, as (name, subset, predicate). A random
+#: seeded draw can easily miss all three — a 10-file sample of mostly short AG
+#: logs would say nothing about the long-trajectory or orchestrator-fault cases
+#: the gate exists to probe — so each is seeded in first and the rest fills up.
+REQUIRED = (
+    ("hc_long", "hc", lambda r: r.n_steps > 80),
+    ("alg_early_error", "alg", lambda r: r.label_mistake_step <= 1),
+    ("hc_orchestrator_fault", "hc", lambda r: is_orchestrator(r.label_mistake_agent)),
+)
+
+
+def sample_files(records, n: int, seed: int) -> tuple[list, dict[str, str]]:
+    """Seeded sample: required cases first, then balanced across subsets.
+
+    Returns the sample and which file satisfied each required case, so the
+    report can show the composition was met rather than assert it.
+    """
     rng = random.Random(seed)
+    by_key = {r.key: r for r in records}
+    chosen: list = []
+    covered: dict[str, str] = {}
+
+    for name, subset, pred in REQUIRED:
+        pool = sorted(
+            (r for r in records if r.subset == subset and pred(r) and r.key not in {c.key for c in chosen}),
+            key=lambda r: r.key,
+        )
+        if pool:
+            pick = rng.choice(pool)
+            chosen.append(pick)
+            covered[name] = pick.key
+        else:
+            covered[name] = ""
+
     by_subset: dict[str, list] = {}
     for r in records:
         by_subset.setdefault(r.subset, []).append(r)
-    out = []
-    subsets = sorted(by_subset)
-    per = max(n // max(len(subsets), 1), 1)
-    for subset in subsets:
-        pool = sorted(by_subset[subset], key=lambda r: r.key)
-        out.extend(rng.sample(pool, min(per, len(pool))))
-    # Top up deterministically if the split left room.
-    rest = [r for r in sorted(records, key=lambda r: r.key) if r not in out]
-    out.extend(rest[: max(n - len(out), 0)])
-    return out[:n]
+    target = {s: n // max(len(by_subset), 1) for s in by_subset}
+    for subset in sorted(by_subset):
+        have = sum(1 for c in chosen if c.subset == subset)
+        pool = sorted(
+            (r for r in by_subset[subset] if r.key not in {c.key for c in chosen}),
+            key=lambda r: r.key,
+        )
+        take = max(target[subset] - have, 0)
+        chosen.extend(rng.sample(pool, min(take, len(pool))))
+
+    rest = [r for r in sorted(records, key=lambda r: r.key) if r.key not in {c.key for c in chosen}]
+    chosen.extend(rest[: max(n - len(chosen), 0)])
+    _ = by_key
+    return chosen[:n], covered
 
 
 def sparkline(values: list[float], lo: float = 0.0, hi: float = 1.0) -> str:
@@ -105,7 +141,10 @@ def main(argv=None) -> int:
     judge_spec = resolve_model(args.judge)
     manifest.record_models(judge=judge_spec)
 
-    records = sample_files(flatten(load_records(args)), args.n_files, args.seed)
+    records, covered = sample_files(flatten(load_records(args)), args.n_files, args.seed)
+    missing = [k for k, v in covered.items() if not v]
+    if missing:
+        manifest.note(f"smoke composition could not cover: {', '.join(missing)}")
     manifest.record_anomalies(records)
     client = build_client(judge_spec, device=args.device, seed=args.seed)
 
@@ -114,7 +153,12 @@ def main(argv=None) -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    results: dict = {"judge": judge_spec, "files": [r.key for r in records], "arms": {}}
+    results: dict = {
+        "judge": judge_spec,
+        "files": [r.key for r in records],
+        "required_cases": covered,
+        "arms": {},
+    }
     blocks: list[str] = []
     rows_csv: list[dict] = []
     all_sanity: dict = {}
@@ -191,6 +235,10 @@ def main(argv=None) -> int:
             "# Stage-0 smoke",
             f"{len(records)} seeded files (seed={args.seed}), judge `{judge_spec}`, "
             f"readout `{args.readout}`. Three evidence arms × both GT settings.",
+            "**Required composition** — "
+            + "; ".join(
+                f"{k}: {v or '**NOT COVERED**'}" for k, v in covered.items()
+            ),
             f"Curves also written to `{csv_path}` for plotting.",
             "## Gate",
             verdict,
