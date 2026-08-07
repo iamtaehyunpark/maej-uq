@@ -101,7 +101,8 @@ def main(argv=None) -> int:
                 )
             ids = id_map(directory)
             for method in args.methods:
-                receipt = Path(args.out_dir) / f"snapshot_{method}_{subset}.txt"
+                # Absolute: their script runs with cwd set to its own directory.
+                receipt = (Path(args.out_dir) / f"snapshot_{method}_{subset}.txt").resolve()
                 receipt.parent.mkdir(parents=True, exist_ok=True)
                 run_repo_subprocess(
                     args.repo_path,

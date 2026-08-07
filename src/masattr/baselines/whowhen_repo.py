@@ -476,11 +476,17 @@ _seen = set()
 
 
 def _record(model):
+    """Best-effort. A receipt problem must never corrupt a prediction: this runs
+    inside their API call path, and an exception here surfaces to them as a
+    failed request."""
     if not _receipt or not model or model in _seen:
         return
     _seen.add(model)
-    with open(_receipt, "a", encoding="utf-8") as fh:
-        fh.write(model + "\\n")
+    try:
+        with open(_receipt, "a", encoding="utf-8") as fh:
+            fh.write(model + "\\n")
+    except OSError:
+        pass
 
 
 class _Completions:
