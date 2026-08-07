@@ -1,4 +1,4 @@
-"""Rule validation against HC's parsed types (spec v2 Part C §2).
+"""Rule validation against HC's parsed types (spec v3 Part C §2).
 
 The gate runs **before any use of the rules on AG**: HC types are parsed from
 the compound role, so they are known, and the rules must reproduce them at ≥90%

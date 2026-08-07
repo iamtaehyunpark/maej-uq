@@ -1,4 +1,4 @@
-"""Step-type normalisation (spec v2 Part C §2).
+"""Step-type normalisation (spec v3 Part C §2).
 
 Two paths, and the distinction is load-bearing:
 

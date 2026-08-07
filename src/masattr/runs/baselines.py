@@ -1,4 +1,4 @@
-"""Who&When baseline reproduction (Part C §6).
+"""Who&When baseline reproduction (spec v3 Part C §6).
 
 all_at_once / step_by_step / binary_search, run twice: with gpt-4o (their
 regime) and with our judge model (the capability control). Without both arms,

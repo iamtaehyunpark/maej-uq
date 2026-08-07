@@ -1,4 +1,4 @@
-"""Surrogate-intrinsic baseline (spec v2 Part C §6, experiment E7).
+"""Surrogate-intrinsic baseline (spec v3 Part C §6, experiment E7).
 
 Frozen logs do not carry the generating model's own token distributions, so no
 true intrinsic uncertainty signal is recoverable here. What is computable is how

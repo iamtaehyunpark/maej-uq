@@ -1,4 +1,4 @@
-"""Apply fold statistics to step scores (spec v2.1 §2).
+"""Apply fold statistics to step scores (spec v3 Part C §4).
 
 Each file's steps are z-scored under the statistics of *its own* fold — fit on
 every other file — and the result is written to ``p_norm``. The raw score stays

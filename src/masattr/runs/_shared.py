@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .. import paths as paths_mod
-from ..attribute.rules import METHODS, PRIMARY, attribute
+from ..attribute.rules import METHODS, PRIMARY, ablation_methods, attribute
 from ..eval.scorers import gold_map, score_all
 from ..normalize.apply import apply_folds, thresholds_for
 from ..normalize.fit import load_folds
@@ -21,6 +21,7 @@ from ..judge.client import build_client
 from ..judge.score import PREFIX_BUDGET_CHARS, StepScore, by_file, load_scores, score_corpus
 from ..loaders.whowhen_ag import load as load_alg
 from ..loaders.whowhen_hc import load as load_hc
+from .. import specs
 from ..manifest import Manifest, start
 from ..record import Record, read_jsonl, write_jsonl
 
@@ -213,7 +214,8 @@ def attribution_table(
     *,
     threshold: float = 0.0,
     per_file: Mapping[str, Any] | None = None,
-    methods: Iterable[str] = tuple(METHODS),
+    methods: Iterable[str] | None = None,
+    rule_kwargs: Mapping[str, Mapping[str, Any]] | None = None,
     held: Iterable[str] = (),
     n_boot: int = 2000,
     seed: int = 0,
@@ -223,8 +225,14 @@ def attribution_table(
     usable = {k: v for k, v in scores_by_file.items() if k in gold and v}
     table: dict[str, dict] = {}
     preds: dict[str, dict] = {}
-    for method in methods:
-        p = attribute(usable, threshold=threshold, method=method, per_file=per_file)
+    for method in list(methods or [PRIMARY, *ablation_methods()]):
+        p = attribute(
+            usable,
+            threshold=threshold,
+            method=method,
+            per_file=per_file,
+            **dict((rule_kwargs or {}).get(method, {})),
+        )
         preds[method] = p
         table[method] = score_all(
             p, gold, records, held_aside=held, n_boot=n_boot, seed=seed
@@ -254,7 +262,7 @@ def run_config_tables(
     name: str,
     *,
     expect_axis: str | Sequence[str] | None = None,
-    methods: Iterable[str] = tuple(METHODS),
+    methods: Iterable[str] | None = None,
 ) -> int:
     """The body every attribution experiment shares.
 
@@ -292,13 +300,13 @@ def run_config_tables(
             "--threshold. Scoring raw judge output against a threshold picked "
             "here would apply statistics fit on the files being scored."
         )
-    primary, decision = resolve_primary(args)
+    primary, registered = registered_rule(args)
+    manifest.rule_provenance = specs.rule_provenance()
     manifest.record_anomalies(records)
-    if decision:
-        manifest.note(
-            f"primary rule {primary!r} from E0's pre-registered criterion "
-            f"(hash {decision.get('criterion_hash')})"
-        )
+    manifest.note(
+        f"primary rule {primary!r}, fixed by specs/rule_directive.md "
+        f"(hash {manifest.rule_provenance})"
+    )
 
     configs = read_configs(args.scores, folds, typed=typed_norm)
     if not configs:
@@ -313,11 +321,13 @@ def run_config_tables(
             f"ablation. (varied axes here: {varied or 'none'})"
         )
 
+    methods = list(methods) if methods else [PRIMARY, *ablation_methods()]
     lengths = {r.key: r.n_steps for r in records}
     held = held_aside_keys(records, args.seed)
     results: dict[str, Any] = {
         "primary_rule": primary,
-        "e0_decision": decision,
+        "rule_provenance": manifest.rule_provenance,
+        "registered_criteria": registered,
         "typed_normalization": typed_norm,
         "typed_thresholds": not getattr(args, "global_threshold", False),
         "normalized": bool(folds),
@@ -337,6 +347,7 @@ def run_config_tables(
             threshold=threshold,
             per_file=per_file,
             methods=methods,
+            rule_kwargs={PRIMARY: changepoint_kwargs(registered)},
             held=held,
             n_boot=args.n_boot,
             seed=args.seed,
@@ -382,32 +393,54 @@ def run_config_tables(
     return 0
 
 
-def resolve_primary(args: argparse.Namespace) -> tuple[str, dict | None]:
-    """The primary rule, taken from E0's pre-registered decision when present.
+def registered_rule(args: argparse.Namespace) -> tuple[str, dict]:
+    """The primary rule and the registered parameters it runs under.
 
-    E0 fixes its criterion before it runs and writes the resulting rule to
-    ``e0_decision.json``. Reading it here — rather than defaulting to
-    ``first_crossing`` and mentioning the switch in prose — is what makes the
-    pre-registration binding on the numbers.
+    The rule is fixed by ``specs/rule_directive.md`` — no experiment's outcome
+    selects it. What still has to be registered is the changepoint fallback
+    condition, because it is part of the rule's definition: choosing when the
+    rule declines to find a regime, after seeing how often it does, would make
+    the rule outcome-dependent.
     """
-    path = getattr(args, "decision", None)
-    if not path:
-        return PRIMARY, None
-    decision = json.loads(Path(path).read_text(encoding="utf-8"))
-    primary = decision.get("primary_rule", PRIMARY)
-    if primary not in METHODS:
-        raise SystemExit(f"{path}: unknown primary rule {primary!r}; known: {sorted(METHODS)}")
-    return primary, decision
+    registered = specs.criteria()
+    if not getattr(args, "allow_draft_criteria", False):
+        specs.require_status(
+            "criteria",
+            registered,
+            "registered",
+            "The changepoint fallback condition is part of the primary rule.",
+        )
+    return PRIMARY, registered
+
+
+def changepoint_kwargs(registered: Mapping[str, Any]) -> dict[str, Any]:
+    """Registered parameters for the primary rule."""
+    from ..attribute.rules import (
+        CHANGEPOINT_BOUNDARY_FALLBACK,
+        CHANGEPOINT_MIN_CONTRAST,
+        CHANGEPOINT_MIN_SEG,
+    )
+
+    return {
+        "min_seg": int(registered.get("changepoint_min_seg", CHANGEPOINT_MIN_SEG)),
+        "min_contrast": float(
+            registered.get("changepoint_min_contrast", CHANGEPOINT_MIN_CONTRAST)
+        ),
+        "boundary_fallback": bool(
+            registered.get("changepoint_boundary_fallback", CHANGEPOINT_BOUNDARY_FALLBACK)
+        ),
+    }
 
 
 def add_attribution_args(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
     p.add_argument("--scores", nargs="+", required=True, help="step-score JSONL(s)")
     p.add_argument("--folds", help="fold statistics JSON written by E0")
-    p.add_argument("--threshold", type=float, help="override the fitted threshold")
     p.add_argument(
-        "--decision",
-        help="e0_decision.json — sets the primary rule from E0's pre-registered criterion",
+        "--allow-draft-criteria",
+        action="store_true",
+        help="run against unregistered criteria (exploration only; never a result)",
     )
+    p.add_argument("--threshold", type=float, help="override the fitted threshold")
     p.add_argument(
         "--pooled-normalization",
         action="store_true",

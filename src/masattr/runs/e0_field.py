@@ -1,24 +1,27 @@
-"""E0 — score-field sanity and threshold stability (spec v2.1 §2). Runs first.
+"""E0 — score-field sanity. Runs first, and decides nothing.
 
-Two questions, both asked before any attribution number exists:
+The primary attribution rule is fixed by ``specs/rule_directive.md``, so E0 no
+longer gates E1: it reports, and a human reads it. Three questions, all asked
+before any attribution number exists:
 
 **(a) Is there a field to localize?** Per subset and act type, the raw score
 distribution, plus degeneracy checks — constant scores, saturation at the ends,
 a near-binary field. A judge that answers 0 or 1 for everything carries no
 ranking information, and no attribution rule can rescue that.
 
-**(b) Is the crossing threshold stable?** Normalization statistics and the
-crossing threshold are fit by leave-one-file-out CV, so there is one threshold
-per fold. Their cross-fold coefficient of variation says whether "the"
-threshold is a real quantity or an artefact of which files happened to be in
-the training half.
+**(b) What do the per-type distributions look like?** Level and spread per act
+type, which is what typed normalization exists to remove and what E4 ablates.
 
-The decision that follows is **pre-registered in ``specs/e0_criteria.json``**
-and read before the numbers are computed: if the worst threshold CV exceeds the
-registered bound, the primary rule switches from ``first_crossing`` to the
-threshold-free set and ``first_crossing`` demotes to an ablation. The decision
-and the criterion hash go in the run manifest, so the rule cannot be chosen
-after the outcome is visible.
+**(c) How stable is the leave-one-out threshold?** Normalization statistics and
+a crossing threshold are fit per fold, so there is one threshold per held-out
+file. Their cross-fold coefficient of variation is reported because
+``first_crossing`` is an **E3 ablation row** that rests on that threshold — the
+stability number says how much weight that row can carry. The primary rule takes
+nothing from it.
+
+E0 exits non-zero only when the field itself is degenerate beyond the registered
+bound: a constant or saturated field cannot be localized by any rule, and that
+is worth stopping for.
 """
 
 from __future__ import annotations
@@ -35,10 +38,8 @@ from ..normalize.apply import (
     worst_threshold_cv,
 )
 from ..normalize.fit import fit_all_subsets, save_folds, stability
-from ..specs import E0_CRITERIA_FILE, e0_criteria, require_status, sha
+from ..specs import criteria as load_criteria
 from ._shared import add_common, emit, flatten, load_records, open_manifest, read_scores
-
-DECISION_FILE = "e0_decision.json"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,11 +47,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--scores", nargs="+", required=True, help="step-score JSONL(s)")
     p.add_argument("--label-policy", default="prefix", choices=("prefix", "point"))
     p.add_argument("--folds-out", default="runs/normalize/folds.json")
-    p.add_argument(
-        "--allow-draft-criteria",
-        action="store_true",
-        help="run against unregistered criteria (exploration only; never a result)",
-    )
     return p
 
 
@@ -58,19 +54,7 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     manifest = open_manifest("e0_field", args)
 
-    criteria = e0_criteria()
-    if not args.allow_draft_criteria:
-        require_status(
-            "e0_criteria",
-            criteria,
-            "registered",
-            "E0's decision rule must be fixed before E0 runs, or the rule can be "
-            "chosen after the outcome.",
-        )
-    else:
-        manifest.note(
-            "criteria were NOT registered for this run — exploratory only, not an E0 result"
-        )
+    criteria = load_criteria()
 
     records = flatten(load_records(args))
     manifest.record_anomalies(records)
@@ -89,89 +73,66 @@ def main(argv=None) -> int:
     stab = stability(folds)
     worst_cell, worst_cv = worst_threshold_cv(stab)
 
-    bound = float(criteria.get("max_threshold_cv", 0.25))
     max_degenerate = int(criteria.get("max_degenerate_cells", 0))
-    threshold_unstable = worst_cv > bound
     field_degenerate = len(sanity["degenerate"]) > max_degenerate
 
-    primary = (
-        criteria.get("threshold_free_primary", "relative_crossing")
-        if threshold_unstable
-        else criteria.get("threshold_primary", "first_crossing")
-    )
-    decision = {
-        "primary_rule": primary,
-        "threshold_unstable": threshold_unstable,
-        "worst_threshold_cv": worst_cv,
-        "worst_threshold_cell": worst_cell,
-        "max_threshold_cv": bound,
-        "field_degenerate": field_degenerate,
-        "n_degenerate_cells": len(sanity["degenerate"]),
-        "max_degenerate_cells": max_degenerate,
-        "threshold_free_rules": criteria.get(
-            "threshold_free_rules", ["argmin", "changepoint", "relative_crossing"]
-        ),
-        "criterion_hash": sha(json.dumps(criteria, indent=2, sort_keys=True)),
-        "criteria_status": criteria.get("status"),
-        "label_policy": args.label_policy,
-    }
-
     folds_path = save_folds(folds, args.folds_out)
-    out = Path(args.out_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    (out / DECISION_FILE).write_text(json.dumps(decision, indent=2), encoding="utf-8")
-    manifest.note(
-        f"E0 decision: primary rule = {primary} "
-        f"(worst threshold CV {worst_cv:.3f} vs bound {bound}); "
-        f"criterion hash {decision['criterion_hash']}"
-    )
+    Path(args.out_dir).mkdir(parents=True, exist_ok=True)
 
     results = {
         "field_sanity": sanity,
         "stability": stab,
-        "decision": decision,
+        "worst_threshold_cv": worst_cv,
+        "worst_threshold_cell": worst_cell,
+        "field_degenerate": field_degenerate,
+        "n_degenerate_cells": len(sanity["degenerate"]),
+        "max_degenerate_cells": max_degenerate,
         "folds": str(folds_path),
         "n_folds": len(folds),
+        "label_policy": args.label_policy,
+        "decides_nothing": (
+            "the primary rule is fixed by specs/rule_directive.md; this run reports"
+        ),
     }
-    verdict = (
-        f"**Threshold is unstable** (worst CV {worst_cv:.3f} at {worst_cell} > {bound}) → "
-        f"primary rule switches to **{primary}**; first_crossing demotes to an ablation."
-        if threshold_unstable
-        else f"**Threshold is stable** (worst CV {worst_cv:.3f} at {worst_cell} ≤ {bound}) → "
-        f"primary rule stays **{primary}**."
+    manifest.note(
+        f"E0 is sanity-only: {len(sanity['degenerate'])} degenerate cells, worst "
+        f"leave-one-out threshold CV {worst_cv:.3f} at {worst_cell}"
     )
+
+    notes = [
+        f"Worst cross-fold threshold CV: **{worst_cv:.3f}** at `{worst_cell}`. "
+        "This bears on the `first_crossing` **ablation row** only — the primary "
+        "rule reads no threshold.",
+    ]
     if field_degenerate:
-        verdict += (
-            f"\n\n**Field degeneracy exceeds the registered bound** "
+        notes.append(
+            f"**Field degeneracy exceeds the registered bound** "
             f"({len(sanity['degenerate'])} > {max_degenerate}): "
             + "; ".join(sanity["degenerate"])
             + ". No rule can localize a field that does not vary."
         )
+    else:
+        notes.append("Field is usable: no cell is constant, saturated, or near-binary.")
 
     md = "\n".join(
         [
-            "# E0 — score field and threshold stability",
+            "# E0 — score-field sanity",
             "",
-            f"{len(folds)} leave-one-file-out folds, label policy `{args.label_policy}`, "
-            f"criteria `{decision['criterion_hash']}` ({criteria.get('status')})",
+            f"{len(folds)} leave-one-file-out folds, label policy `{args.label_policy}`. "
+            "E0 decides nothing: the primary rule is fixed by "
+            "`specs/rule_directive.md`.",
             "",
             render_field(sanity),
             "",
-            render_stability(stab, bound),
+            render_stability(stab),
             "",
-            "## Pre-registered decision",
+            "## Read-out",
             "",
-            verdict,
+            "\n\n".join(notes),
         ]
     )
     emit(manifest, results, md, args.out_dir)
-    if field_degenerate:
-        return 3  # the field itself is unusable
-    return 2 if threshold_unstable else 0
-
-
-def load_decision(path: str | Path) -> dict:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    return 3 if field_degenerate else 0
 
 
 if __name__ == "__main__":  # pragma: no cover

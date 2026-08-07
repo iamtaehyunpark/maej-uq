@@ -11,12 +11,12 @@ distinction lives in the role (``Orchestrator (thought)`` vs
 ``Orchestrator (-> WebSurfer)``), not in the text: a ledger and a handoff both
 name an agent and both read like instructions. So this module keeps the rules
 for what they do well and escalates only the sub-split — the ~76% of HC parsed
-steps that are coordination — to an LLM classifier, per Part C §2.
+steps that are coordination — to an LLM classifier, per spec v3 Part C §2.
 
 Two constraints hold here:
 
 * The LLM classifier must be **family-disjoint from both judge families**
-  (Part C §Validity, v2.1 §3): typing conditions the judge's evidence policy, so
+  (spec v3 Part C §3): typing conditions the judge's evidence policy, so
   sharing a family closes a loop.
 * The splitter is itself gated. It is validated on HC, where plan/delegate is
   parsed and therefore known, before it is allowed to touch AG.
@@ -35,7 +35,7 @@ from .normalize import classify_steps
 
 COORDINATION = ("plan", "delegate")
 
-#: Gate on the sub-split, mirroring Part C §2's gate on the rules as a whole.
+#: Gate on the sub-split, mirroring spec v3 Part C §2's gate on the rules as a whole.
 SPLIT_GATE = 0.90
 
 

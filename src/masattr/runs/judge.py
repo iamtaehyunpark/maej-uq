@@ -1,4 +1,4 @@
-"""Score a subset with the judge (Part C §3).
+"""Score a subset with the judge (spec v3 Part C §3).
 
 Writes one JSONL of step scores per subset plus a cost row. The shared-prefix
 path is asserted inside the scoring loop, not hoped for.

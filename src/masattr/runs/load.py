@@ -1,4 +1,4 @@
-"""Load Who&When and assert the pre-registered counts (Part C §1)."""
+"""Load Who&When and assert the pre-registered counts (spec v3 Part C §1)."""
 
 from __future__ import annotations
 

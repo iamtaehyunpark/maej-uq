@@ -1,4 +1,4 @@
-"""Prompt scaffold (spec v2 Part C §3).
+"""Prompt scaffold (spec v3 Part C §3).
 
 One scaffold, three readouts. The readout ablation (E2) is only meaningful if
 the logit, verbalized, and binary-verdict rows see *identical* context and

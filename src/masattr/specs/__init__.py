@@ -1,7 +1,8 @@
-"""Frozen artifacts (spec v2 Part B rule 6, v2.1 §1.5).
+"""Frozen artifacts (spec v3 Part B.5).
 
-Prompts, the type-rule table, the E0 decision criteria, and the judge identities
-are serialised here and hashed. Every run's manifest logs those hashes, so a run
+Prompts, the type-rule table, the registered criteria, the judge identities, and
+the directive that fixes the primary attribution rule are serialised here and
+hashed. Every run's manifest logs those hashes, so a run
 is reproducible from ``(commit, manifest)`` alone — and a silent edit to a
 prompt or a decision bound shows up as a hash mismatch instead of an unexplained
 number change.
@@ -9,9 +10,14 @@ number change.
 ``freeze()`` writes the artifacts; ``verify()`` checks the live code still
 matches them and is called at the start of every experiment.
 
-The two owner-set files carry a ``status`` that the runs check: ``e0_criteria``
-must be ``registered`` before E0 runs, and ``judge`` must be ``confirmed``
-before any reported run. Both start as drafts on purpose.
+Two owner-set files carry a ``status`` the runs check: ``criteria`` must be
+``registered`` before any attribution number is computed — the changepoint
+fallback condition is part of the primary rule's definition — and ``judge`` must
+be ``confirmed`` before any reported run. Both start as drafts on purpose.
+
+``rule_directive.md`` is the provenance of the primary rule itself. Its hash is
+logged on every run, so a number can always be traced to the directive that
+fixed the rule that produced it.
 """
 
 from __future__ import annotations
@@ -24,8 +30,9 @@ from typing import Any
 SPEC_DIR = Path(__file__).parent
 PROMPTS_FILE = SPEC_DIR / "prompts.txt"
 TYPE_RULES_FILE = SPEC_DIR / "type_rules.txt"
-E0_CRITERIA_FILE = SPEC_DIR / "e0_criteria.json"
+CRITERIA_FILE = SPEC_DIR / "criteria.json"
 JUDGE_FILE = SPEC_DIR / "judge.json"
+RULE_DIRECTIVE_FILE = SPEC_DIR / "rule_directive.md"
 HASHES_FILE = SPEC_DIR / "hashes.json"
 
 
@@ -37,8 +44,21 @@ def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
-def e0_criteria() -> dict[str, Any]:
-    return _read_json(E0_CRITERIA_FILE)
+def criteria() -> dict[str, Any]:
+    return _read_json(CRITERIA_FILE)
+
+
+def rule_directive() -> str:
+    return (
+        RULE_DIRECTIVE_FILE.read_text(encoding="utf-8")
+        if RULE_DIRECTIVE_FILE.exists()
+        else ""
+    )
+
+
+def rule_provenance() -> str:
+    """Hash of the directive that fixes the primary rule."""
+    return sha(rule_directive())
 
 
 def judge_spec() -> dict[str, Any]:
@@ -63,8 +83,9 @@ def live_artifacts() -> dict[str, str]:
     return {
         "prompts": prompt_text(),
         "type_rules": rule_table_text(),
-        "e0_criteria": json.dumps(e0_criteria(), indent=2, sort_keys=True),
+        "criteria": json.dumps(criteria(), indent=2, sort_keys=True),
         "judge": json.dumps(judge_spec(), indent=2, sort_keys=True),
+        "rule_directive": rule_directive(),
     }
 
 

@@ -15,8 +15,9 @@ This runs in two halves, in order:
 2. **Apply.** Only if the gate passes, re-split AG's classified coordination
    steps and write the retyped records to the cache the judge reads.
 
-The splitter must be family-disjoint from the judge (Part C §Validity): typing
-conditions the judge's evidence policy, so one family for both closes a loop.
+The splitter must be family-disjoint from every judge family (spec v3 Part C
+§3): typing conditions the judge's evidence policy, so one shared family closes
+a loop.
 """
 
 from __future__ import annotations

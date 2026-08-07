@@ -1,4 +1,4 @@
-"""Unified record (spec v2 Part C §1).
+"""Unified record (spec v3 Part C §1).
 
 One frozen dataclass carries data through every stage. Stages consume and
 return records, or plain arrays keyed by ``(file_id, step_idx)``. No pandas

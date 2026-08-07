@@ -10,9 +10,7 @@ CV within each subset — put those scores on one scale; the decisive step is
 localised by reading the normalized field pointwise. Nothing is aggregated
 across steps.
 
-Implements [`docs/mas_attr_harness_spec_v2.md`](docs/mas_attr_harness_spec_v2.md)
-as amended by
-[`docs/mas_attr_harness_spec_v2_1_severance.md`](docs/mas_attr_harness_spec_v2_1_severance.md).
+Implements [`docs/mas_attr_harness_spec_v3.md`](docs/mas_attr_harness_spec_v3.md).
 Module docstrings cite the section they implement. Inventory and provenance are
 in [`BUILD_REPORT.md`](BUILD_REPORT.md).
 
@@ -23,7 +21,7 @@ in [`BUILD_REPORT.md`](BUILD_REPORT.md).
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/python -m pytest        # 144 tests, no data / GPU / network required
+.venv/bin/python -m pytest        # 152 tests, no data / GPU / network required
 ```
 
 Extras: `.[judge]` for the local-LM judge (torch + transformers), `.[openai]`
@@ -136,7 +134,7 @@ the assigned subtask and *earlier* same-turn peers. A future step in the
 evidence would make the score non-causal and inflate attribution for free. The
 one deliberate exception is `--policy hindsight`, which is the E5 ceiling, not a
 method. The subtask pointer, peer corroboration, and prefix window are
-separately switchable, because §7(iv) ablates them separately.
+separately switchable, because E5 ablates them separately.
 
 **Long logs truncate under a pre-registered policy, not under context pressure.**
 Type-aware retention: query, ground truth, and every plan/delegate step stay
@@ -158,15 +156,24 @@ threshold as fallback and as E4's global-threshold arm. `masattr e1` refuses to
 run without folds rather than picking a threshold on the corpus it is scoring,
 and the raw score stays on every row beside `p_norm`.
 
-**E0 fixes the primary rule before it can see the outcome.** It asks two
-questions — is there a field to localize (per-type distributions, plus
-constant / saturated / near-binary checks), and is the threshold stable across
-folds — and reads its decision bound from `specs/e0_criteria.json`, which must
-be marked `registered` before it will run. If the worst cross-fold threshold CV
-exceeds the bound, the primary rule switches to the threshold-free set
-(`relative_crossing`, argmin, changepoint) and first-crossing demotes to an
-ablation. The decision and the criterion hash go in the manifest, and `masattr
-e1 --decision` reads the rule from the file rather than defaulting.
+**The primary rule is `changepoint_single`, fixed by directive.** A two-regime
+mean-shift split of the per-step score sequence: the decisive step is the first
+step of regime 2, and the fault agent owns it. The split is chosen by a contrast
+statistic — a two-sample difference scaled by pooled spread and segment sizes —
+so a split isolating two endpoint steps cannot outrank a genuine regime change
+on raw gap alone. It reads no threshold, so nothing about it depends on a
+quantity estimated across the corpus. It falls back to argmin when the
+trajectory is too short, when the best split sits at a boundary, or when the
+contrast is below the registered minimum; that condition lives in
+`specs/criteria.json`, which must be marked `registered` before any attribution
+number is computed. The rule is fixed by `specs/rule_directive.md`, whose hash
+is logged as `rule_provenance` on every run — **no experiment selects it**.
+
+**E0 decides nothing.** It reports: whether there is a field to localize
+(per-type distributions, plus constant / saturated / near-binary checks) and how
+stable the leave-one-out threshold is — the latter bearing on the
+`first_crossing` *ablation row*, not on the primary rule. It exits non-zero only
+when the field itself is degenerate.
 
 **Ablations refuse single arms.** `masattr e2` stops if every input score file
 has the same readout. A one-row ablation is not an ablation.

@@ -1,4 +1,4 @@
-"""Per-type score normalization, fit by leave-one-file-out CV (spec v2.1 §2).
+"""Per-type score normalization, fit by leave-one-file-out CV (spec v3 Part C §4).
 
 The judge emits a raw score ``s_t`` per step. Those scores are not comparable
 across act types — a plan and a tool call are graded against different rubrics,

@@ -1,4 +1,4 @@
-"""Model identity and family-disjointness checks (Part C §Validity).
+"""Model identity and family-disjointness checks (spec v3 Part C §3).
 
 Two disjointness constraints, both enforced here rather than promised in prose:
 
@@ -63,7 +63,7 @@ def check_disjoint(role_a: str, model_a: str, role_b: str, model_b: str, *, stri
     elif fa == fb:
         problem = (
             f"{role_a} ({model_a!r}) and {role_b} ({model_b!r}) are both family "
-            f"{fa!r}; Part C §Validity requires them disjoint"
+            f"{fa!r}; spec v3 Part C §3 requires them disjoint"
         )
     if problem and strict:
         raise DisjointnessError(problem)

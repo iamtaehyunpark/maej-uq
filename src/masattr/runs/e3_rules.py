@@ -1,7 +1,16 @@
 """E3 — attribution-rule ablation.
 
-first_crossing (primary) vs argmin vs changepoint vs agent_first, over the same
-field. Every table in this harness already carries all four rules, so E3 adds
+The primary rule, ``changepoint_single``, against every demoted alternative over
+the same field: ``argmin``; ``first_crossing`` on the leave-one-out threshold;
+``changepoint`` (the same split chosen by an unnormalised mean gap, which
+ablates the contrast statistic); ``agent_first``; and ``relative_crossing`` at
+k ∈ {1.5, 2, 2.5}.
+
+The k sweep is here and only here. ``RELATIVE_K`` is deliberately unregistered:
+a rule demoted to an ablation row should show its sensitivity to its own
+hyperparameter rather than rest on one value chosen off-camera.
+
+Every table in this harness carries all of these rows already, so E3 adds
 nothing to the scoring; what it adds is the head-to-head summary and the
 step-first vs agent-first disagreement, stratified by step type and — on HC —
 by orchestrator vs worker.

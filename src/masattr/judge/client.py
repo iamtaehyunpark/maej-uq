@@ -1,4 +1,4 @@
-"""Judge client (spec v2 Part C §3).
+"""Judge client (spec v3 Part C §3).
 
 One stateful client per judge model. Its shared prefix only ever grows, so
 judging a ``T``-step trajectory costs ``O(T)`` prefix tokens instead of

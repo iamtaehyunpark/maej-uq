@@ -1,4 +1,4 @@
-"""Prefix-conditional scoring loop (spec v2 Part C §3).
+"""Prefix-conditional scoring loop (spec v3 Part C §3).
 
 Per trajectory the client is reset once and the prefix grows by exactly one step
 per assessment, so cost is ``O(T)`` prefix tokens plus ``T`` short readouts. The
@@ -145,7 +145,7 @@ def pointers(
 ) -> list[str]:
     """Assigned subtask + earlier same-turn peers for a terse ``execute`` step.
 
-    The two are separately switchable because §7(iv) ablates them separately:
+    The two are separately switchable because E5 ablates them separately:
     "does peer corroboration earn its place" is a pending direction decision,
     and it cannot be answered if the subtask pointer moves at the same time.
 
@@ -257,7 +257,7 @@ def score_record(
 ) -> TrajectoryScores:
     """Score every step of one trajectory against a shared, growing prefix.
 
-    ``prefix_window`` is the prefix-slice arm of §7(iv): when set, step ``t`` is
+    ``prefix_window`` is the prefix-slice arm of E5: when set, step ``t`` is
     judged against only the last ``prefix_window`` steps rather than all of
     ``0..t``. It forces a rebuild per step, so it is an ablation, not a mode to
     run the primary numbers in.

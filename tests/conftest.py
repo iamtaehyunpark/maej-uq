@@ -152,22 +152,21 @@ def parquet_root(tmp_path_factory) -> Path:
 
 @pytest.fixture()
 def register_criteria(tmp_path, monkeypatch):
-    """Register E0's decision criteria for a test, without touching the repo.
+    """Register the criteria for a test, without touching the repo.
 
-    E0 refuses draft criteria, and the spec-drift check refuses criteria that do
-    not match the frozen hash — both guards are the point, so tests satisfy them
-    properly rather than switching them off: the criteria file and the hash file
+    Two guards have to be satisfied properly rather than switched off: the
+    status check (the changepoint fallback condition is part of the primary
+    rule) and the spec-drift hash check. So the criteria file and the hash file
     are both redirected into tmp, then frozen together.
     """
     from masattr import specs
 
     def register(**overrides):
-        blob = {**specs.e0_criteria(), **overrides, "status": "registered"}
-        path = tmp_path / "e0_criteria.json"
+        blob = {**specs.criteria(), **overrides, "status": "registered"}
+        path = tmp_path / "criteria.json"
         path.write_text(json.dumps(blob, indent=2))
-        monkeypatch.setattr(specs, "E0_CRITERIA_FILE", path)
+        monkeypatch.setattr(specs, "CRITERIA_FILE", path)
         monkeypatch.setattr(specs, "HASHES_FILE", tmp_path / "hashes.json")
-        monkeypatch.setattr("masattr.runs.e0_field.e0_criteria", lambda: blob)
         specs.freeze()
         return blob
 

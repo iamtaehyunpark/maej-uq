@@ -1,6 +1,7 @@
 {
   "prompts": "1842b6d031e65362",
   "type_rules": "434c9b068a083738",
-  "e0_criteria": "49b751710ec76bc9",
-  "judge": "5f48f0a777c8f6a1"
+  "criteria": "e7fc2001422f55a4",
+  "judge": "5f48f0a777c8f6a1",
+  "rule_directive": "cdcb43b542297e70"
 }

@@ -1,6 +1,6 @@
 # BUILD_REPORT — masattr
 
-Inventory and provenance statement for the package (spec v2.1 §1.6).
+Inventory and provenance statement for the package (spec v3 Part B.6).
 
 ## Provenance
 
@@ -30,10 +30,10 @@ comparability row is a choice rather than an inheritance.
 | `typing/` | `normalize.py` (HC role parsing + AG rules), `validate.py` (the gate), `refine.py` (hierarchical plan/delegate splitter) |
 | `judge/` | `client.py` (KV prefix sharing), `prompts.py` (one scaffold, three readouts), `score.py` (scoring loop, evidence policies, truncation) |
 | `normalize/` | `fit.py` (per-type statistics + thresholds by leave-one-file-out CV), `apply.py` (z-scoring, field sanity, stability) |
-| `attribute/` | `rules.py` — first-crossing, argmin, changepoint, agent-first, relative-crossing |
+| `attribute/` | `rules.py` — `changepoint_single` (primary), plus the demoted rows: first-crossing, argmin, changepoint, agent-first, relative-crossing |
 | `eval/` | `scorers.py` (exact + substring comparability), `ci.py` (bootstrap, reliability) |
 | `baselines/` | `whowhen_repo.py`, `surrogate.py` |
-| `specs/` | Frozen prompts, type-rule table, E0 criteria, judge identities, hashes |
+| `specs/` | Frozen prompts, type-rule table, registered criteria, judge identities, the rule directive, hashes |
 | `runs/` | One argparse module per experiment: `load`, `typecheck`, `retype`, `judge`, `e0_field`, `e1`–`e7`, `e9`, `baselines` |
 
 ## LOC
@@ -42,17 +42,18 @@ Measured over `src/masattr/**.py` (AST-based; docstring lines counted separately
 
 | | lines |
 |---|---|
-| code | **3926** |
-| docstrings | 781 |
-| blank + comment | 1144 |
-| physical total | 5851 |
-| tests (not counted toward the target) | 1662 |
+| code | **3979** |
+| docstrings | 829 |
+| blank + comment | 1179 |
+| physical total | 5987 |
+| tests (not counted toward the target) | 1789 |
 
-**Over the ≤2.5k target by ~1.4k code lines.** The re-export walls were already
-cut; what remains is features. Largest modules: `judge/score.py` (334),
-`runs/_shared.py` (329), `attribute/rules.py` (238), `normalize/fit.py` (216).
+**Under the ≤4k target, at 3979 code lines** — with ~20 lines of headroom, so
+the next feature needs a cut alongside it. Largest modules: `judge/score.py`,
+`runs/_shared.py`, `attribute/rules.py`, `normalize/fit.py`.
 
-Honest options if the target is hard, in the order I would cut them:
+The re-export walls were cut earlier; what remains is features. In the order I
+would cut them if the ceiling binds:
 
 - `baselines/whowhen_repo.py` `--impl local` (~110 lines): the three strategies
   re-prompted so the pipeline runs without their checkout. Not the reproduction;
@@ -64,10 +65,7 @@ Honest options if the target is hard, in the order I would cut them:
   dependency-free test suite and dry runs; deleting them makes CI need a GPU.
 - `paths.py` `ALTERNATES` (~20 lines): tolerance for differently-laid-out copies.
 
-None of these is an abstraction; each is a capability. The ~1.4k overage is
-mostly the experiment surface the manifest asks for (E0–E9, four rules, three
-readouts, four evidence axes, two normalization arms, two scorers, four slices),
-and cutting it would cut experiments.
+None of these is an abstraction; each is a capability.
 
 ## Reproducibility
 
@@ -78,7 +76,10 @@ the anomalous file ids, and the full argument set; every experiment verifies the
 live code still matches the frozen artifacts before it starts. A run is
 reproducible from `(commit, manifest)`.
 
-Two guards are deliberate refusals rather than defaults: `e0_criteria.json` must
-be marked `registered` before E0 runs (otherwise the decision rule could be
-chosen after the outcome), and `judge.json` must be `confirmed` before any
-reported run.
+Two guards are deliberate refusals rather than defaults: `criteria.json` must be
+marked `registered` before any attribution number is computed — the changepoint
+fallback condition is part of the primary rule's definition — and `judge.json`
+must be `confirmed` before any reported run.
+
+The primary rule itself is fixed by `specs/rule_directive.md`, whose hash is
+logged as `rule_provenance` on every run. No experiment selects it.

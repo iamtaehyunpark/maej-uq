@@ -1,26 +1,38 @@
-"""Attribution rules (spec v2 Part C §5).
+"""Attribution rules.
 
-Primary: **first crossing** on the type-normalised ``p_t`` — the earliest step
-whose calibrated score falls below the frozen threshold; the fault agent is the
-owner of that step. This encodes the causal reading of a failed trajectory: the
-decisive error is the first one, and everything after it is contamination.
+Primary: **``changepoint_single``** — a two-regime mean-shift split of the
+per-step score sequence. The decisive step is the first step of regime 2, and
+the fault agent is its owner. The rule is fixed by
+``specs/rule_directive.md``, not chosen by any experiment's outcome, and that
+directive's hash is logged on every run.
 
-Ablations: ``argmin``; ``changepoint`` (binary segmentation, one frozen
-hyperparameter); ``agent_first`` (per-agent max ``p`` selects the agent, then
-first-crossing inside that agent's steps).
+Why this shape. A failed trajectory is not a sequence of independent bad steps;
+it is a run that was going acceptably and then was not. A mean-shift split reads
+exactly that — where the level of the field changes — and its answer is the
+*boundary*, which is what "decisive step" means. It needs no threshold carried
+in from other files, so nothing about it depends on a quantity estimated across
+the corpus.
 
-**Threshold-free set.** ``first_crossing`` and ``agent_first`` depend on a
-crossing threshold estimated across files. If E0 finds that threshold unstable
-across folds, a rule resting on it is not a rule worth reporting, and the
-pre-registered criterion promotes the threshold-free set instead:
-``argmin``, ``changepoint``, and ``relative_crossing``, none of which needs a
-value carried in from outside the trajectory being scored.
+The split is chosen by a **contrast statistic**, not a raw mean difference:
+a two-sample statistic scaled by pooled spread and segment sizes, so a split
+isolating two steps at the end cannot outrank a genuine regime change simply by
+having a large raw gap. When the best split is at a boundary, or its contrast is
+below the registered minimum, the trajectory has no regime structure to find and
+the rule **falls back to argmin**. Both conditions live in
+``specs/criteria.json`` and must be registered before any attribution number is
+computed.
+
+Ablation rows (E3): ``argmin``; ``relative_crossing`` at k ∈ {1.5, 2, 2.5};
+``first_crossing`` on the leave-one-out threshold; ``changepoint`` (the same
+split chosen by an unnormalised mean gap, which ablates the contrast statistic);
+``agent_first`` (per-agent selection, then localisation within that agent).
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+import math
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
@@ -32,10 +44,20 @@ from ..typing.normalize import is_orchestrator
 #: knob, fixed here, so the ablation cannot be tuned into a win.
 CHANGEPOINT_MIN_SEG = 2
 
-#: Frozen relative-crossing hyperparameter: how many of the trajectory's own
-#: standard deviations below its own mean a step must fall. One knob, fixed
-#: here for the same reason.
-RELATIVE_K = 1.0
+#: Default k for ``relative_crossing``: how many of the trajectory's own standard
+#: deviations below its own mean a step must fall. Deliberately **not**
+#: registered — the rule is an E3 ablation row, and E3 sweeps the sensitivity set
+#: below rather than resting on one value.
+RELATIVE_K = 2.0
+
+#: The k values E3 reports for ``relative_crossing``.
+RELATIVE_K_SWEEP = (1.5, 2.0, 2.5)
+
+#: Fallback defaults, used when the registered criteria are unavailable. The
+#: registered file is what governs a reported run; these keep the rule callable
+#: in isolation (tests, notebooks) without silently inventing a different rule.
+CHANGEPOINT_MIN_CONTRAST = 1.0
+CHANGEPOINT_BOUNDARY_FALLBACK = True
 
 
 @dataclass(slots=True)
@@ -71,9 +93,9 @@ def _p(scores: Sequence[StepScore]) -> list[float]:
 def _thr(threshold: Threshold, type_norm: str) -> float:
     """Resolve the crossing threshold for one step.
 
-    §5 says a step crosses *its* calibrated threshold, so a mapping of per-type
-    thresholds is the typed arm and a bare float is the global-threshold arm.
-    A type absent from the mapping falls back to its ``""`` entry.
+    Used by the demoted threshold-dependent rows. A mapping of per-type
+    thresholds is the typed arm and a bare float is the global-threshold arm;
+    a type absent from the mapping falls back to its ``""`` entry.
     """
     if isinstance(threshold, Mapping):
         return float(threshold.get(type_norm, threshold.get("", 0.5)))
@@ -161,13 +183,80 @@ def agent_first(scores: Sequence[StepScore], threshold: Threshold) -> Attributio
     )
 
 
-def relative_crossing(scores: Sequence[StepScore], threshold: Threshold = 0.0) -> Attribution:
-    """Earliest step falling ``RELATIVE_K`` sd below the trajectory's own mean.
+def changepoint_single(
+    scores: Sequence[StepScore],
+    threshold: Threshold = 0.0,
+    *,
+    min_seg: int = CHANGEPOINT_MIN_SEG,
+    min_contrast: float = CHANGEPOINT_MIN_CONTRAST,
+    boundary_fallback: bool = CHANGEPOINT_BOUNDARY_FALLBACK,
+) -> Attribution:
+    """Primary rule: two-regime mean-shift split; decisive = first step of regime 2.
 
-    Threshold-free: the comparison is entirely within the trajectory being
-    scored, so nothing is carried in from other files. It keeps first-crossing's
-    temporal-prior shape — the decisive error is the *first* one — while
-    surviving an unstable cross-file threshold.
+    The contrast at split ``k`` is the two-sample statistic
+
+        (mean(p[:k]) − mean(p[k:])) / (s_pooled · sqrt(1/k + 1/(n−k)))
+
+    which rewards a large drop supported by enough steps on both sides, rather
+    than any large raw gap. ``threshold`` is accepted and ignored: this rule
+    takes nothing from outside the trajectory.
+
+    Falls back to argmin when the trajectory is too short to have two regimes,
+    when the best split sits at a boundary (isolating an endpoint rather than
+    finding a regime), or when the best contrast is below the registered
+    minimum. The fallback is recorded on the result, so a table can always say
+    how often the primary rule actually found a regime.
+    """
+    if not scores:
+        return Attribution("", "changepoint_single", None, None)
+    p = np.asarray(_p(scores), dtype=float)
+    n = p.size
+    if n < 2 * min_seg:
+        return _at(scores, int(np.argmin(p)), "changepoint_single",
+                   {"fallback": "argmin", "reason": "too_short", "n": int(n)})
+
+    scale = float(p.std(ddof=0))
+    if scale <= 1e-12:
+        # A trajectory with no variation at all has no regimes to find.
+        return _at(scores, int(np.argmin(p)), "changepoint_single",
+                   {"fallback": "argmin", "reason": "no_variation"})
+
+    lo, hi = min_seg, n - min_seg
+    best_k, best_c = lo, -np.inf
+    for k in range(lo, hi + 1):
+        before, after = p[:k], p[k:]
+        var = (before.var(ddof=0) * k + after.var(ddof=0) * (n - k)) / n
+        # Floor the pooled spread against the trajectory's own scale. A *perfect*
+        # split has zero within-segment variance, which is the strongest possible
+        # evidence of two regimes — without the floor it divides by zero and the
+        # one split that should win is the one that gets skipped.
+        sd = max(math.sqrt(var), 1e-6 * scale)
+        c = float(
+            (before.mean() - after.mean()) / (sd * math.sqrt(1.0 / k + 1.0 / (n - k)))
+        )
+        if c > best_c:
+            best_k, best_c = k, c
+    at_boundary = best_k in (lo, hi)
+    if boundary_fallback and at_boundary:
+        return _at(scores, int(np.argmin(p)), "changepoint_single",
+                   {"fallback": "argmin", "reason": "boundary", "split": int(best_k),
+                    "contrast": best_c})
+    if best_c < min_contrast:
+        return _at(scores, int(np.argmin(p)), "changepoint_single",
+                   {"fallback": "argmin", "reason": "low_contrast", "split": int(best_k),
+                    "contrast": best_c, "min_contrast": min_contrast})
+    return _at(scores, best_k, "changepoint_single",
+               {"contrast": best_c, "min_seg": min_seg, "split": int(best_k)})
+
+
+def relative_crossing(
+    scores: Sequence[StepScore], threshold: Threshold = 0.0, *, k: float = RELATIVE_K
+) -> Attribution:
+    """Earliest step falling ``k`` sd below the trajectory's own mean.
+
+    An E3 ablation row. ``k`` is not registered: E3 sweeps
+    ``RELATIVE_K_SWEEP`` and reports the sensitivity rather than resting on one
+    value.
 
     Falls back to argmin when nothing stands out, for the same reason
     first_crossing does: every trajectory here failed, so declining to answer
@@ -179,15 +268,16 @@ def relative_crossing(scores: Sequence[StepScore], threshold: Threshold = 0.0) -
     sd = float(p.std(ddof=0))
     if sd <= 0:
         return _at(scores, int(np.argmin(p)), "relative_crossing", {"degenerate": True})
-    cut = float(p.mean()) - RELATIVE_K * sd
+    cut = float(p.mean()) - k * sd
     for i, v in enumerate(p):
         if v < cut:
-            return _at(scores, i, "relative_crossing", {"crossed": True, "cut": cut, "k": RELATIVE_K})
+            return _at(scores, i, "relative_crossing", {"crossed": True, "cut": cut, "k": k})
     i = int(np.argmin(p))
     return _at(scores, i, "relative_crossing", {"crossed": False, "fallback": "argmin", "cut": cut})
 
 
 METHODS: dict[str, Callable[..., Attribution]] = {
+    "changepoint_single": changepoint_single,
     "first_crossing": first_crossing,
     "argmin": argmin,
     "changepoint": changepoint,
@@ -199,11 +289,30 @@ METHODS: dict[str, Callable[..., Attribution]] = {
 THRESHOLD_DEPENDENT = ("first_crossing", "agent_first")
 
 #: Rules that read only the trajectory in front of them.
-THRESHOLD_FREE = ("argmin", "changepoint", "relative_crossing")
+THRESHOLD_FREE = ("changepoint_single", "argmin", "changepoint", "relative_crossing")
 
-#: Default primary. E0's pre-registered criterion may promote a threshold-free
-#: rule instead; the runs read the decision rather than this constant.
-PRIMARY = "first_crossing"
+#: Fixed by ``specs/rule_directive.md``, not by any experiment's outcome.
+PRIMARY = "changepoint_single"
+
+#: E3's rows: everything that is not the primary rule, with the relative-crossing
+#: sensitivity sweep expanded.
+def ablation_methods() -> list[str]:
+    rows = [m for m in METHODS if m not in (PRIMARY, "relative_crossing")]
+    return rows + [f"relative_crossing@{k}" for k in RELATIVE_K_SWEEP]
+
+
+def resolve_method(name: str) -> Callable[..., Attribution]:
+    """Look up a rule, including parameterised names like ``relative_crossing@1.5``."""
+    base, sep, arg = name.partition("@")
+    fn = METHODS.get(base)
+    if fn is None:
+        raise KeyError(f"unknown attribution rule {name!r}; known: {sorted(METHODS)}")
+    if not sep:
+        return fn
+    if base != "relative_crossing":
+        raise KeyError(f"rule {base!r} takes no parameter, got {name!r}")
+    k = float(arg)
+    return lambda scores, threshold=0.0: relative_crossing(scores, threshold, k=k)
 
 
 def attribute(
@@ -212,6 +321,7 @@ def attribute(
     threshold: Threshold = 0.0,
     method: str = PRIMARY,
     per_file: Mapping[str, Threshold] | None = None,
+    **rule_kwargs: Any,
 ) -> dict[str, Attribution]:
     """Run one rule over every file.
 
@@ -220,12 +330,12 @@ def attribute(
     a single global value would apply statistics fit *with* the file to the file
     itself.
     """
-    fn = METHODS[method]
+    fn = resolve_method(method)
     out = {}
     for key, rows in scores_by_file.items():
         rows = sorted(rows, key=lambda s: s.step_idx)
         thr = (per_file or {}).get(key, threshold)
-        a = fn(rows, thr)
+        a = fn(rows, thr, **rule_kwargs)
         a.key = key
         out[key] = a
     return out

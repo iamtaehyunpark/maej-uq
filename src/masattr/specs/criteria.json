@@ -1,0 +1,24 @@
+{
+  "status": "draft",
+  "_comment": [
+    "Registered parameters. Hashed into every run manifest.",
+    "STATUS MUST BE 'registered' BEFORE ANY ATTRIBUTION NUMBER IS COMPUTED:",
+    "the changepoint fallback condition is part of the primary rule's",
+    "definition, so choosing it after seeing results would make the rule",
+    "outcome-dependent. E0 is sanity-only and does not read a decision here.",
+    "",
+    "changepoint_min_seg: shortest admissible regime, in steps.",
+    "changepoint_min_contrast: below this contrast the split is noise, and the",
+    "rule falls back to argmin.",
+    "changepoint_boundary_fallback: when true, a split landing at the first or",
+    "last admissible position is treated as isolating an endpoint rather than",
+    "finding a regime, and falls back to argmin.",
+    "",
+    "max_degenerate_cells: how many (subset x type) cells may be constant,",
+    "saturated, or near-binary before E0 calls the field unusable."
+  ],
+  "changepoint_min_seg": 2,
+  "changepoint_min_contrast": 1.0,
+  "changepoint_boundary_fallback": true,
+  "max_degenerate_cells": 0
+}

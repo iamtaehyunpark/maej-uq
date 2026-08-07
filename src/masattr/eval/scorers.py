@@ -1,4 +1,4 @@
-"""Scoring (spec v2 Part C §6, Part E).
+"""Scoring (spec v3 Part C §6, Part E).
 
 Primary: **exact match** on agent and step. Comparability row: the Who&When
 substring scorer, re-implemented here from the four lines in their

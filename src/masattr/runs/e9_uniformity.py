@@ -1,4 +1,4 @@
-"""E9 — uniformity stratification (Part C §7). No new model calls.
+"""E9 — uniformity stratification (spec v3 Part C §7). No new model calls.
 
 Recomputed from E1's saved predictions: is the primary rule uniformly good, or
 is it carried by one stratum? Accuracy is broken out by the gold step's act

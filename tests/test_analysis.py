@@ -1,4 +1,4 @@
-"""Calibration, attribution rules, and scoring."""
+"""Normalization, attribution rules, and scoring."""
 
 from __future__ import annotations
 
@@ -147,12 +147,28 @@ def test_disagreement_counts():
 
 def test_all_rules_registered():
     assert set(METHODS) == {
+        "changepoint_single",
         "first_crossing",
         "argmin",
         "changepoint",
         "agent_first",
         "relative_crossing",
     }
+
+
+def test_primary_is_fixed_by_directive():
+    from masattr.attribute.rules import PRIMARY, ablation_methods
+
+    assert PRIMARY == "changepoint_single"
+    # Every demoted rule is an ablation row, and the k sweep lives only there.
+    rows = ablation_methods()
+    assert {"first_crossing", "argmin", "changepoint", "agent_first"} <= set(rows)
+    assert [r for r in rows if r.startswith("relative_crossing@")] == [
+        "relative_crossing@1.5",
+        "relative_crossing@2.0",
+        "relative_crossing@2.5",
+    ]
+    assert PRIMARY not in rows
 
 
 def test_threshold_free_set_needs_no_threshold():
@@ -168,11 +184,25 @@ def test_threshold_free_set_needs_no_threshold():
 def test_relative_crossing_is_early_biased_like_first_crossing():
     from masattr.attribute.rules import relative_crossing
 
-    # Two steps fall more than one sd below the trajectory mean; the rule takes
-    # the first, argmin takes the worst.
+    # Two steps fall k sd below the trajectory mean; the rule takes the first,
+    # argmin takes the worst.
     s = [_score(0, 0.9), _score(1, 0.1), _score(2, 0.05), _score(3, 0.9), _score(4, 0.9)]
-    assert relative_crossing(s).step == 1
+    assert relative_crossing(s, k=1.0).step == 1
     assert argmin(s).step == 2
+
+
+def test_relative_crossing_k_is_a_parameter_not_a_constant():
+    from masattr.attribute.rules import RELATIVE_K_SWEEP, relative_crossing, resolve_method
+
+    s = [_score(0, 0.9), _score(1, 0.35), _score(2, 0.05), _score(3, 0.9), _score(4, 0.9)]
+    # A looser k can only fire at the same step or earlier, never later — which
+    # is the invariant the sweep is exploring.
+    steps = [relative_crossing(s, k=k).step for k in (1.0, 1.5, 2.0, 2.5)]
+    assert steps == sorted(steps)
+    assert RELATIVE_K_SWEEP == (1.5, 2.0, 2.5)
+    # The parameterised name is the same rule, not a re-implementation.
+    for k in RELATIVE_K_SWEEP:
+        assert resolve_method(f"relative_crossing@{k}")(s).step == relative_crossing(s, k=k).step
 
 
 def test_relative_crossing_falls_back_when_nothing_stands_out():
@@ -202,3 +232,92 @@ def test_position_table_skips_single_step_trajectories():
 
     preds = {"hc/a": first_crossing([_score(0, 0.1)], 0.5)}
     assert position_table(preds, {"hc/a": ("A", 0)}, {"hc/a": 1})["gold"]["n"] == 0
+
+
+# --- the primary rule -------------------------------------------------------
+
+
+def test_changepoint_single_returns_the_first_step_of_regime_two():
+    from masattr.attribute.rules import changepoint_single
+
+    s = [_score(i, 0.9) for i in range(5)] + [_score(i, 0.1) for i in range(5, 10)]
+    a = changepoint_single(s)
+    assert a.step == 5  # the boundary, not the worst step
+    assert "fallback" not in a.detail
+    assert a.detail["contrast"] > 0
+
+
+def test_perfect_split_scores_highest_not_zero():
+    from masattr.attribute.rules import changepoint_single
+
+    # A perfect split has zero within-segment variance. Without a floor on the
+    # pooled spread it divides by zero and the one split that should win is the
+    # one that gets skipped.
+    perfect = [_score(i, 0.9) for i in range(4)] + [_score(i, 0.1) for i in range(4, 8)]
+    noisy = [_score(i, 0.9 - 0.05 * (i % 2)) for i in range(4)] + [
+        _score(i, 0.2 + 0.05 * (i % 2)) for i in range(4, 8)
+    ]
+    a, b = changepoint_single(perfect), changepoint_single(noisy)
+    assert a.step == b.step == 4
+    assert a.detail["contrast"] > b.detail["contrast"]
+
+
+def test_a_single_outlier_does_not_move_the_split():
+    from masattr.attribute.rules import changepoint_single
+
+    # One catastrophic step early, then a sustained shift later. argmin answers
+    # the outlier; a regime split answers where the run actually changed, which
+    # is the reason to prefer it.
+    s = [_score(i, 0.9) for i in range(10)] + [_score(i, 0.4) for i in range(10, 20)]
+    s[3] = _score(3, 0.0)
+    assert argmin(s).step == 3
+    assert changepoint_single(s).step == 10
+
+
+def test_boundary_split_falls_back_to_argmin():
+    from masattr.attribute.rules import changepoint_single
+
+    s = [_score(i, 0.9) for i in range(6)] + [_score(6, 0.1), _score(7, 0.1)]
+    a = changepoint_single(s)
+    assert a.detail["fallback"] == "argmin"
+    assert a.detail["reason"] == "boundary"
+
+
+def test_low_contrast_falls_back_to_argmin():
+    from masattr.attribute.rules import changepoint_single
+
+    s = [_score(i, v) for i, v in enumerate([0.5, 0.6, 0.4, 0.55, 0.45, 0.52])]
+    a = changepoint_single(s, min_contrast=100.0, boundary_fallback=False)
+    assert a.detail["fallback"] == "argmin"
+    assert a.detail["reason"] == "low_contrast"
+
+
+def test_flat_trajectory_falls_back_to_argmin():
+    from masattr.attribute.rules import changepoint_single
+
+    a = changepoint_single([_score(i, 0.5) for i in range(8)])
+    assert a.detail["reason"] == "no_variation"
+
+
+def test_short_trajectory_falls_back_to_argmin():
+    from masattr.attribute.rules import changepoint_single
+
+    a = changepoint_single([_score(0, 0.9), _score(1, 0.1), _score(2, 0.2)])
+    assert a.detail["reason"] == "too_short"
+
+
+def test_changepoint_single_reads_no_threshold():
+    from masattr.attribute.rules import changepoint_single
+
+    s = [_score(i, 0.9) for i in range(5)] + [_score(i, 0.1) for i in range(5, 10)]
+    # Any threshold, same answer: the rule takes nothing from outside.
+    assert changepoint_single(s, 0.0).step == changepoint_single(s, {"execute": 9.9}).step
+
+
+def test_registered_fallback_condition_changes_behaviour():
+    from masattr.attribute.rules import changepoint_single
+
+    s = [_score(i, 0.9) for i in range(6)] + [_score(6, 0.1), _score(7, 0.1)]
+    assert changepoint_single(s, boundary_fallback=True).detail["reason"] == "boundary"
+    strict = changepoint_single(s, boundary_fallback=False)
+    assert strict.detail.get("fallback") is None and strict.step == 6

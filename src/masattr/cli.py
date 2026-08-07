@@ -11,8 +11,8 @@ Manifest order (Part C §7)::
     masattr typecheck              # rules vs HC parsed types, ≥90% gate
     masattr retype --splitter ...  # gate the plan/delegate splitter on HC, apply to AG
     masattr judge --subsets alg hc --judge hf:<id>      [× readout × policy × GT]
-    masattr e0 --scores ...        # field sanity + threshold stability; fixes the primary rule
-    masattr e1 --scores ... --folds ... --decision ...   # primary vs baselines
+    masattr e0 --scores ...        # field sanity; reports, decides nothing
+    masattr e1 --scores ... --folds ...                  # primary vs baselines
     masattr baselines --generators openai:gpt-4o judge:hf:<id> --impl repo --repo-path ...
     masattr e2/e3/e4/e5/e6/e7      # ablations
     masattr e9 --e1-results ...    # stratification, no new runs

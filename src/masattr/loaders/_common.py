@@ -1,4 +1,4 @@
-"""Shared loader plumbing and the pre-registered corpus asserts (Part C §1)."""
+"""Shared loader plumbing and the pre-registered corpus asserts (spec v3 Part C §1)."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ _TRUTH_KEYS = ("ground_truth", "groundtruth", "answer", "gt", "final_answer")
 #: Column carrying the trajectory identity in the released parquet.
 _ID_KEYS = ("question_ID", "question_id", "id", "file_id")
 
-#: What to do with the five files that violate Part C §1's own asserts.
+#: What to do with the five released files that violate the per-step asserts.
 #: ``fail`` — refuse to load (spec-literal; the corpus will not load at all).
 #: ``flag`` — load, flag, and let the run dual-report them.
 #: ``drop`` — exclude them, which also breaks the 126/58 count assert.
@@ -159,11 +159,11 @@ def require(d: dict, key: str, where: str, *aliases: str) -> Any:
 
 
 def cast_step(value: Any, where: str) -> int:
-    """``mistake_step`` string→int. Hard-fails: v2 Part C §1 allows no flag here.
+    """``mistake_step`` string→int. Hard-fails; no flag class covers this.
 
-    v1 flagged uncastable values and carried on. v2 does not, and that is the
-    right call for an attribution-only harness — the annotated step *is* the
-    label, so a file whose label cannot be read is not a datapoint.
+    The annotated step *is* the label, so a file whose label cannot be read is
+    not a datapoint — unlike the two record-level anomalies, which are flagged
+    and dual-reported because the counts depend on them.
     """
     if value is None:
         raise LoaderError(f"{where}: mistake_step is null")

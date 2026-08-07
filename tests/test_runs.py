@@ -16,6 +16,12 @@ def frozen_specs():
     specs.freeze()
 
 
+@pytest.fixture(autouse=True)
+def _registered(register_criteria):
+    """Attribution runs refuse draft criteria, so every run test registers them."""
+    return register_criteria()
+
+
 def _base(data_root, tmp_path, name):
     return [
         "--data-root",
@@ -41,7 +47,7 @@ def _judge(data_root, tmp_path, extra=()):
 
 def test_freeze_and_verify_round_trip():
     hashes = specs.freeze()
-    assert set(hashes) == {"prompts", "type_rules", "e0_criteria", "judge"}
+    assert set(hashes) == {"prompts", "type_rules", "criteria", "judge", "rule_directive"}
     assert specs.verify(strict=True) == []
 
 
@@ -93,12 +99,17 @@ def test_e1_primary_table(data_root, tmp_path, capsys):
     res = json.loads((tmp_path / "e1" / "results.json").read_text())
     cfg = next(iter(res["configs"].values()))
     assert set(cfg["scores"]) == {
+        "changepoint_single",
         "first_crossing",
         "argmin",
         "changepoint",
         "agent_first",
-        "relative_crossing",
+        "relative_crossing@1.5",
+        "relative_crossing@2.0",
+        "relative_crossing@2.5",
     }
+    assert res["primary_rule"] == "changepoint_single"
+    assert res["rule_provenance"]
     variants = set(cfg["scores"]["first_crossing"])
     assert {"exact/all", "substring/all", "exact/excl_flagged"} <= variants
     md = (tmp_path / "e1" / "results.md").read_text()
@@ -289,15 +300,7 @@ def test_e5_prefix_window_is_an_ablation_arm(data_root, tmp_path, capsys):
 # --- E0 redefined: field sanity + threshold stability -----------------------
 
 
-def test_e0_refuses_unregistered_criteria(data_root, tmp_path, capsys):
-    scores = _judge(data_root, tmp_path)
-    capsys.readouterr()
-    with pytest.raises(RuntimeError, match="registered"):
-        main(["e0", *_base(data_root, tmp_path, "e0draft"), "--scores", *scores])
-
-
-def test_e0_reports_field_and_stability(data_root, tmp_path, register_criteria, capsys):
-    register_criteria()
+def test_e0_reports_field_and_stability(data_root, tmp_path, capsys):
     scores = _judge(data_root, tmp_path)
     capsys.readouterr()
     rc = main(
@@ -310,68 +313,16 @@ def test_e0_reports_field_and_stability(data_root, tmp_path, register_criteria, 
             str(tmp_path / "folds.json"),
         ]
     )
-    assert rc in (0, 2, 3)
+    assert rc in (0, 3)  # 3 only when the field itself is degenerate
     res = json.loads((tmp_path / "e0" / "results.json").read_text())
     assert res["field_sanity"]["cells"]
     assert set(res["stability"]) == {"alg", "hc"}
+    assert "decides_nothing" in res
     assert (tmp_path / "folds.json").exists()
     md = (tmp_path / "e0" / "results.md").read_text()
-    assert "Pre-registered decision" in md
-
-
-def test_e0_decision_switches_the_primary_rule(data_root, tmp_path, register_criteria, capsys):
-    # Register a bound no corpus can meet, so the switch fires.
-    register_criteria(max_threshold_cv=-1.0)
-    scores = _judge(data_root, tmp_path)
-    capsys.readouterr()
-    rc = main(
-        [
-            "e0",
-            *_base(data_root, tmp_path, "e0sw"),
-            "--scores",
-            *scores,
-            "--folds-out",
-            str(tmp_path / "folds_sw.json"),
-        ]
-    )
-    assert rc in (2, 3)  # falsified: threshold unstable
-    decision = json.loads((tmp_path / "e0sw" / "e0_decision.json").read_text())
-    assert decision["threshold_unstable"]
-    assert decision["primary_rule"] == "relative_crossing"
-    assert decision["criterion_hash"]
-
-
-def test_e1_uses_the_primary_rule_e0_chose(data_root, tmp_path, register_criteria, capsys):
-    register_criteria(max_threshold_cv=-1.0)
-    scores = _judge(data_root, tmp_path)
-    capsys.readouterr()
-    main(
-        [
-            "e0",
-            *_base(data_root, tmp_path, "e0d"),
-            "--scores",
-            *scores,
-            "--folds-out",
-            str(tmp_path / "folds_d.json"),
-        ]
-    )
-    capsys.readouterr()
-    rc = main(
-        [
-            "e1",
-            *_base(data_root, tmp_path, "e1d"),
-            "--scores",
-            *scores,
-            "--folds",
-            str(tmp_path / "folds_d.json"),
-            "--decision",
-            str(tmp_path / "e0d" / "e0_decision.json"),
-        ]
-    )
-    assert rc == 0
-    res = json.loads((tmp_path / "e1d" / "results.json").read_text())
-    assert res["primary_rule"] == "relative_crossing"
-    assert res["normalized"] and res["n_folds"] > 0
+    assert "decides nothing" in md
+    # E0 no longer writes a decision, and nothing downstream reads one.
+    assert not (tmp_path / "e0" / "e0_decision.json").exists()
 
 
 def test_e1_refuses_to_run_unnormalized(data_root, tmp_path, capsys):
@@ -381,8 +332,7 @@ def test_e1_refuses_to_run_unnormalized(data_root, tmp_path, capsys):
         main(["e1", *_base(data_root, tmp_path, "e1u"), "--scores", *scores])
 
 
-def test_e4_pooled_normalization_arm(data_root, tmp_path, register_criteria, capsys):
-    register_criteria()
+def test_e4_pooled_normalization_arm(data_root, tmp_path, capsys):
     scores = _judge(data_root, tmp_path)
     capsys.readouterr()
     main(
@@ -414,10 +364,9 @@ def test_e4_pooled_normalization_arm(data_root, tmp_path, register_criteria, cap
     assert res["typed_thresholds"] is False
 
 
-def test_judge_spec_files_start_as_drafts():
+def test_judge_spec_starts_as_a_draft():
     from masattr import specs
 
-    assert specs.e0_criteria()["status"] == "draft"
     assert specs.judge_spec()["status"] == "draft"
     with pytest.raises(RuntimeError, match="confirmed"):
         specs.require_status("judge", specs.judge_spec(), "confirmed", "why")

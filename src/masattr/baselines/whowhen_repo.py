@@ -1,4 +1,4 @@
-"""Who&When baseline reproduction (spec v2 Part C §6, Part B rule 5).
+"""Who&When baseline reproduction (spec v3 Part C §6, Part B.3).
 
 Their repo is a **dependency, not a fork**: point ``--repo-path`` at a checkout
 and this module imports their three functions from ``inference.py`` and calls

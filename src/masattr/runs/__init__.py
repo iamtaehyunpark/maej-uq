@@ -17,7 +17,7 @@ from . import (
     typecheck,
 )
 
-#: Experiment manifest order (Part C §7). E8 (success-control) is gated behind an
+#: Experiment manifest order (spec v3 Part C §7). E8 (success-control) is gated behind an
 #: explicit owner decision and is deliberately absent — see Part D.
 ORDER = (
     "load",

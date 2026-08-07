@@ -1,4 +1,4 @@
-"""Run manifest (spec v2 Part B rule 6, Part E).
+"""Run manifest (spec v3 Part B.5, Part E).
 
 Every experiment writes one. It records the commit, the frozen artifact hashes,
 the calibration hash, and the full argument set — so ``(commit, manifest)`` is
@@ -40,8 +40,10 @@ class Manifest:
     args: dict[str, Any] = field(default_factory=dict)
     commit: str = field(default_factory=git_commit)
     spec_hashes: dict[str, str] = field(default_factory=specs.hashes)
-    calibration_hash: str = ""
-    #: {role: model family}, so the Part C §Validity disjointness constraints are
+    #: Hash of the directive that fixes the primary attribution rule, so any
+    #: number can be traced to the directive that chose the rule producing it.
+    rule_provenance: str = ""
+    #: {role: model family}, so the spec v3 Part C §3 disjointness constraints are
     #: auditable from the manifest rather than promised in prose.
     model_families: dict[str, str] = field(default_factory=dict)
     #: File ids of the released records that violate Part C §1's per-step asserts.
@@ -60,7 +62,7 @@ class Manifest:
 
         self.model_families = {**self.model_families, **families(**roles)}
         # The type-classifier must be disjoint from *both* judge families
-        # (v2.1 §3): typing conditions the evidence policy either judge reads.
+        # (spec v3 Part C §3): typing conditions the evidence policy either judge reads.
         for a, b in (
             ("type_classifier", "judge"),
             ("type_classifier", "sensitivity_judge"),

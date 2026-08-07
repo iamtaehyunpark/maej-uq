@@ -5,8 +5,7 @@ record type, normalise step act-types, judge every step prefix-conditionally,
 normalise the scores per type by leave-one-file-out CV, then localise the
 decisive mistake.
 
-Implements ``docs/mas_attr_harness_spec_v2.md`` as amended by
-``docs/mas_attr_harness_spec_v2_1_severance.md``. Module docstrings cite the
+Implements ``docs/mas_attr_harness_spec_v3.md``. Module docstrings cite the
 section they implement.
 """
 

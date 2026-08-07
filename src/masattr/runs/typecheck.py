@@ -1,4 +1,4 @@
-"""Type-rule validation gate (Part C §2).
+"""Type-rule validation gate (spec v3 Part C §2).
 
 Runs the AG rules against HC's parsed types. ≥90% agreement is required before
 the rules may be used on AG at all, so this exits non-zero on failure.
