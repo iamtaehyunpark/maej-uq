@@ -60,8 +60,25 @@ def substring_step(pred: int | None, gold: int | None) -> bool:
     return str(gold) in str(pred)
 
 
+def tolerance_step(pred: int | None, gold: int | None, k: int) -> bool:
+    """Step match within ``k`` positions.
+
+    A localization that lands one step off is a different kind of miss from one
+    that lands twenty steps off, and exact match scores them identically. The
+    tolerance rows separate "near the decisive step" from "nowhere near it".
+    """
+    if pred is None or gold is None:
+        return False
+    return abs(int(pred) - int(gold)) <= k
+
+
+#: scorer name -> (agent predicate, step predicate). ``exact`` is primary;
+#: ``substring`` is the published-regime comparability row; the tolerance rows
+#: are diagnostic.
 SCORERS = {
     "exact": (exact_agent, exact_step),
+    "tol1": (exact_agent, lambda p, g: tolerance_step(p, g, 1)),
+    "tol2": (exact_agent, lambda p, g: tolerance_step(p, g, 2)),
     "substring": (substring_agent, substring_step),
 }
 
@@ -152,7 +169,7 @@ def score_all(
     for slice_name, keys in slices(records, held_aside).items():
         usable = sorted(k for k in keys if k in preds and k in gold)
         pairs = [(preds[k].as_pair(), gold[k]) for k in usable]  # type: ignore[union-attr]
-        for scorer in ("exact", "substring"):
+        for scorer in SCORERS:
             s = score_pairs(
                 pairs, scorer=scorer, slice_name=slice_name, n_boot=n_boot, seed=seed
             )

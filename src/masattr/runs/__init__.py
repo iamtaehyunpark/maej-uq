@@ -1,6 +1,7 @@
 """One module per experiment, argparse only (spec v2 Part B rule 3)."""
 
 from . import (
+    b1_sanity,
     baselines,
     e0_field,
     e1_primary,
@@ -44,6 +45,7 @@ COMMANDS = {
     "smoke": smoke,
     "judge": judge,
     "baselines": baselines,
+    "b1": b1_sanity,
     "e0": e0_field,
     "e1": e1_primary,
     "e2": e2_readout,
