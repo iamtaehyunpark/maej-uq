@@ -27,10 +27,12 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     manifest = open_manifest("judge", args)
     records = load_records(args)
-    judge_spec = resolve_model(args.judge)
+    judge_spec = resolve_model(args.judge, args.transport)
     manifest.record_models(judge=judge_spec)
     manifest.record_anomalies([r for recs in records.values() for r in recs])
-    client = build_client(judge_spec, device=args.device, seed=args.seed)
+    client = build_client(
+        judge_spec, device=args.device, seed=args.seed, base_url=args.base_url
+    )
 
     scores_dir = Path(args.scores_dir)
     scores_dir.mkdir(parents=True, exist_ok=True)

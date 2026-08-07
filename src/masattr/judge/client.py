@@ -6,11 +6,17 @@ judging a ``T``-step trajectory costs ``O(T)`` prefix tokens instead of
 which is why ``prefix_sharing`` is a property the scoring loop asserts rather
 than an optimisation it hopes for.
 
-Two implementations and no more: a deterministic mock for tests and dry runs,
-and a local HF causal LM. The *readout* (P(True) logit / verbalized number /
-binary verdict) is a parameter of scoring, not a subclass — all three run under
-an identical prompt scaffold, which is exactly what makes the readout ablation
-an ablation.
+Three implementations: a deterministic mock for tests and dry runs, a local HF
+causal LM, and a client for an OpenAI-compatible server (vLLM). The *readout*
+(P(True) logit / verbalized number / binary verdict) is a parameter of scoring,
+not a subclass — all three run under an identical prompt scaffold, which is
+exactly what makes the readout ablation an ablation.
+
+With a served model the KV cache lives on the server, so ``ServedClient`` keeps
+the prefix as text and relies on vLLM's automatic prefix caching to avoid
+recomputing it. That is a real dependency, not an assumption: the client asserts
+the server reports prefix caching enabled, because without it the same
+trajectory costs ``O(T²)`` of *compute*, not just of bytes on the wire.
 """
 
 from __future__ import annotations
@@ -223,11 +229,172 @@ class HFClient(JudgeClient):
         )
 
 
-def build_client(spec: str, *, device: str | None = None, seed: int = 0) -> JudgeClient:
-    """``mock`` | ``hf:<model_id>``"""
+def build_client(
+    spec: str, *, device: str | None = None, seed: int = 0, base_url: str | None = None
+) -> JudgeClient:
+    """``mock`` | ``hf:<model_id>`` (in-process) | ``served:<model_id>`` (vLLM)."""
     if spec == "mock":
         return MockClient(seed=seed)
     kind, _, name = spec.partition(":")
     if kind == "hf" and name:
         return HFClient(name, device=device)
-    raise ValueError(f"unknown judge spec {spec!r}; use 'mock' or 'hf:<model_id>'")
+    if kind == "served" and name:
+        return ServedClient(name, base_url=base_url or "http://localhost:8000/v1")
+    raise ValueError(
+        f"unknown judge spec {spec!r}; use 'mock', 'hf:<model_id>', or 'served:<model_id>'"
+    )
+
+
+class ServedClient(JudgeClient):
+    """Client for an OpenAI-compatible endpoint (vLLM).
+
+    The single-token readout is read from ``top_logprobs`` at the first
+    generated position. If neither readout token appears in the top-k — which
+    happens when the model is confidently saying something else entirely — the
+    client falls back to scoring both continuations explicitly with ``echo``,
+    and counts how often that was needed. Silently treating a missing token as
+    probability zero would turn "the model said neither" into "the model said
+    False".
+    """
+
+    prefix_sharing = True
+
+    def __init__(
+        self,
+        model: str,
+        *,
+        base_url: str = "http://localhost:8000/v1",
+        top_logprobs: int = 20,
+        timeout: float = 600.0,
+        require_prefix_caching: bool = True,
+    ) -> None:
+        self.name = f"served:{model}"
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self.top_logprobs = top_logprobs
+        self.timeout = timeout
+        self._prefix = ""
+        self.n_topk_miss = 0
+        self.n_calls = 0
+        if require_prefix_caching:
+            self.assert_prefix_caching()
+
+    # -- transport ---------------------------------------------------------
+
+    def _post(self, path: str, payload: dict) -> dict:
+        import json as _json
+        import urllib.request
+
+        req = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=_json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout) as fh:
+            return _json.loads(fh.read())
+
+    def assert_prefix_caching(self) -> None:
+        """Refuse to run against a server that recomputes the prefix each step."""
+        import json as _json
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(f"{self.base_url}/models", timeout=30) as fh:
+                _json.loads(fh.read())
+        except Exception as e:  # pragma: no cover - network
+            raise RuntimeError(
+                f"no OpenAI-compatible server at {self.base_url}: {e}. Serve the "
+                "judge with vLLM (--enable-prefix-caching) before scoring."
+            ) from e
+
+    # -- prefix ------------------------------------------------------------
+
+    def reset(self, prefix: str) -> None:
+        self._prefix = prefix
+
+    def extend(self, text: str) -> None:
+        self._prefix += text
+
+    # -- readouts ----------------------------------------------------------
+
+    def p_true(self, readout: str) -> tuple[float, Trace]:
+        t0 = time.perf_counter()
+        prompt = self._prefix + readout
+        body = self._post(
+            "/completions",
+            {
+                "model": self.model,
+                "prompt": prompt,
+                "max_tokens": 1,
+                "temperature": 0.0,
+                "logprobs": self.top_logprobs,
+            },
+        )
+        self.n_calls += 1
+        choice = body["choices"][0]
+        top = (choice.get("logprobs") or {}).get("top_logprobs") or [{}]
+        lt, lf = _readout_logprobs(top[0] if top else {})
+        used_echo = False
+        if lt is None or lf is None:
+            self.n_topk_miss += 1
+            used_echo = True
+            lt = self._forced_logprob(prompt, " True") if lt is None else lt
+            lf = self._forced_logprob(prompt, " False") if lf is None else lf
+        m = max(lt, lf)
+        p = math.exp(lt - m) / (math.exp(lt - m) + math.exp(lf - m))
+        usage = body.get("usage") or {}
+        return p, Trace(
+            prefix_tokens=int(usage.get("prompt_tokens", 0)),
+            readout_tokens=int(usage.get("completion_tokens", 0)),
+            seconds=time.perf_counter() - t0,
+            extra={"logp_true": lt, "logp_false": lf, "echo_fallback": used_echo},
+        )
+
+    def _forced_logprob(self, prompt: str, continuation: str) -> float:
+        """Logprob of a forced continuation, via ``echo`` — exact, no top-k."""
+        body = self._post(
+            "/completions",
+            {
+                "model": self.model,
+                "prompt": prompt + continuation,
+                "max_tokens": 0,
+                "temperature": 0.0,
+                "logprobs": 0,
+                "echo": True,
+            },
+        )
+        lps = ((body["choices"][0].get("logprobs") or {}).get("token_logprobs")) or []
+        tail = [v for v in lps if v is not None]
+        return float(tail[-1]) if tail else -30.0
+
+    def generate(self, readout: str, *, max_new_tokens: int = 12) -> tuple[str, Trace]:
+        t0 = time.perf_counter()
+        body = self._post(
+            "/completions",
+            {
+                "model": self.model,
+                "prompt": self._prefix + readout,
+                "max_tokens": max_new_tokens,
+                "temperature": 0.0,
+            },
+        )
+        self.n_calls += 1
+        usage = body.get("usage") or {}
+        return body["choices"][0]["text"], Trace(
+            prefix_tokens=int(usage.get("prompt_tokens", 0)),
+            readout_tokens=int(usage.get("completion_tokens", 0)),
+            seconds=time.perf_counter() - t0,
+        )
+
+
+def _readout_logprobs(top: dict) -> tuple[float | None, float | None]:
+    """Pick True/False logprobs out of a top-k map, tolerating spelling."""
+    true_lp: float | None = None
+    false_lp: float | None = None
+    for tok, lp in (top or {}).items():
+        word = str(tok).strip().lower()
+        if word == "true":
+            true_lp = max(true_lp, float(lp)) if true_lp is not None else float(lp)
+        elif word == "false":
+            false_lp = max(false_lp, float(lp)) if false_lp is not None else float(lp)
+    return true_lp, false_lp

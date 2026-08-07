@@ -394,7 +394,8 @@ def test_judge_roles_are_declared_and_pairwise_disjoint():
 
     assert specs.check_families() == []
     assert specs.role("judge_primary")["status"] == "confirmed"
-    assert specs.client_spec("judge_primary") == "hf:Qwen/Qwen3.6-35B-A3B"
+    assert specs.client_spec("judge_primary") == "served:Qwen/Qwen3.6-35B-A3B"
+    assert specs.client_spec("judge_primary", "hf") == "hf:Qwen/Qwen3.6-35B-A3B"
 
 
 def test_a_draft_role_refuses_to_resolve(tmp_path, monkeypatch):
@@ -411,7 +412,7 @@ def test_a_draft_role_refuses_to_resolve(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="not 'confirmed'"):
         resolve_model("judge_secondary")
-    assert resolve_model("judge_primary") == "hf:Qwen/Qwen3.6-35B-A3B"
+    assert resolve_model("judge_primary") == "served:Qwen/Qwen3.6-35B-A3B"
     assert resolve_model("mock") == "mock"
     assert resolve_model("hf:some/other-model") == "hf:some/other-model"
 
@@ -469,7 +470,7 @@ def test_all_roles_confirmed_and_disjoint():
     assert specs.check_families() == []
     for role in ("judge_primary", "judge_secondary", "type_classifier", "proxy_lm"):
         assert specs.role(role)["status"] == "confirmed"
-        assert resolve_model(role).startswith("hf:")
+        assert resolve_model(role).startswith("served:")
 
 
 def test_primary_rule_refuses_unnormalized_scores(data_root, tmp_path, capsys):
@@ -620,3 +621,21 @@ def test_smoke_sample_is_deterministic(records):
     a, _ = sample_files(pool, 4, seed=0)
     b, _ = sample_files(pool, 4, seed=0)
     assert [r.key for r in a] == [r.key for r in b]
+
+
+def test_roles_resolve_per_transport():
+    from masattr.runs._shared import resolve_model
+
+    assert resolve_model("judge_primary", "served") == "served:Qwen/Qwen3.6-35B-A3B"
+    assert resolve_model("judge_primary", "hf") == "hf:Qwen/Qwen3.6-35B-A3B"
+    assert resolve_model("mock", "served") == "mock"
+
+
+def test_served_client_reads_true_false_out_of_topk():
+    from masattr.judge.client import _readout_logprobs
+
+    assert _readout_logprobs({" True": -0.1, " False": -2.3}) == (-0.1, -2.3)
+    assert _readout_logprobs({"true": -0.5, "FALSE": -1.5}) == (-0.5, -1.5)
+    # Neither present: the caller must fall back, not read it as False.
+    assert _readout_logprobs({"Yes": -0.2, "No": -1.0}) == (None, None)
+    assert _readout_logprobs({}) == (None, None)

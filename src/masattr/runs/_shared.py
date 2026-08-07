@@ -61,6 +61,17 @@ def add_judge_args(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
         "(judge_primary, judge_secondary)",
     )
     p.add_argument("--device")
+    p.add_argument(
+        "--transport",
+        default="served",
+        choices=("served", "hf"),
+        help="served = OpenAI-compatible endpoint (vLLM); hf = weights in-process",
+    )
+    p.add_argument(
+        "--base-url",
+        default="http://localhost:8000/v1",
+        help="endpoint for --transport served",
+    )
     p.add_argument("--readout", default="ptrue", choices=("ptrue", "verbalized", "binary"))
     p.add_argument("--policy", default="typed", choices=("typed", "plain", "hindsight"))
     p.add_argument("--with-gt", action="store_true", help="append the reference answer (both settings run for primary tables)")
@@ -95,7 +106,7 @@ def add_judge_args(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
     return p
 
 
-def resolve_model(value: str) -> str:
+def resolve_model(value: str, transport: str = "served") -> str:
     """Turn a role name from ``specs/judge.json`` into a client spec.
 
     Anything that is not a declared role passes through unchanged, so ``mock``
@@ -107,7 +118,7 @@ def resolve_model(value: str) -> str:
     alias = {"primary": "judge_primary", "secondary": "judge_secondary"}.get(value, value)
     if alias in specs.ROLES:
         specs.require_role(alias)
-        return specs.client_spec(alias)
+        return specs.client_spec(alias, transport)
     return value
 
 
@@ -159,9 +170,10 @@ def score(
 ) -> dict[str, list[StepScore]]:
     """Score a corpus, defaulting every axis to the CLI args."""
     client = build_client(
-        resolve_model(judge or args.judge),
+        resolve_model(judge or args.judge, getattr(args, "transport", "served")),
         device=getattr(args, "device", None),
         seed=args.seed,
+        base_url=getattr(args, "base_url", None),
     )
     results = score_corpus(
         records,

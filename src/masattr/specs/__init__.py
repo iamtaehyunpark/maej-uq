@@ -85,12 +85,21 @@ def role_id(name: str) -> str:
     return str(role(name).get("id", ""))
 
 
-def client_spec(name: str) -> str:
-    """The role's id as a client spec. Bare HF ids are prefixed."""
+def client_spec(name: str, transport: str = "served") -> str:
+    """The role's id as a client spec.
+
+    ``served`` targets an OpenAI-compatible endpoint (vLLM); ``hf`` loads the
+    weights in-process. The id itself is transport-agnostic, so the choice lives
+    with the run rather than in the spec file.
+    """
     ident = role_id(name)
     if not ident:
         raise RuntimeError(f"specs/judge.json declares no id for role {name!r}")
-    return ident if ":" in ident else f"hf:{ident}"
+    if ":" in ident:
+        return ident
+    if transport not in ("served", "hf"):
+        raise RuntimeError(f"unknown transport {transport!r}; use 'served' or 'hf'")
+    return f"{transport}:{ident}"
 
 
 def require_role(name: str) -> dict[str, Any]:
