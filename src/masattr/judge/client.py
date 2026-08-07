@@ -267,31 +267,59 @@ class ServedClient(JudgeClient):
         top_logprobs: int = 20,
         timeout: float = 600.0,
         require_prefix_caching: bool = True,
+        max_retries: int = 5,
+        retry_backoff: float = 5.0,
     ) -> None:
         self.name = f"served:{model}"
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.top_logprobs = top_logprobs
         self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_backoff = retry_backoff
         self._prefix = ""
         self.n_topk_miss = 0
         self.n_calls = 0
+        self.n_retries = 0
         if require_prefix_caching:
             self.assert_prefix_caching()
 
     # -- transport ---------------------------------------------------------
 
     def _post(self, path: str, payload: dict) -> dict:
+        """POST with bounded retries.
+
+        A shared GPU box loses its server occasionally — an engine OOM-killed by
+        the kernel surfaces as a 500, then as connection-refused. Retrying a few
+        times with backoff turns a transient loss into a pause instead of
+        destroying a multi-hour run; a server that is genuinely gone still fails
+        loudly rather than silently returning nothing.
+        """
         import json as _json
+        import urllib.error
         import urllib.request
 
-        req = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=_json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
+        last: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                req = urllib.request.Request(
+                    f"{self.base_url}{path}",
+                    data=_json.dumps(payload).encode(),
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=self.timeout) as fh:
+                    return _json.loads(fh.read())
+            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
+                code = getattr(e, "code", None)
+                if code is not None and 400 <= code < 500:
+                    raise  # a bad request will not become good by repeating it
+                last = e
+                self.n_retries += 1
+                if attempt < self.max_retries:
+                    time.sleep(self.retry_backoff * (2**attempt))
+        raise RuntimeError(
+            f"{self.base_url}{path} failed after {self.max_retries} retries: {last}"
         )
-        with urllib.request.urlopen(req, timeout=self.timeout) as fh:
-            return _json.loads(fh.read())
 
     def assert_prefix_caching(self) -> None:
         """Refuse to run against a server that recomputes the prefix each step."""

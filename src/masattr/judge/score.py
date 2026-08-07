@@ -493,12 +493,36 @@ def score_corpus(
     lookahead: str = "none",
     budget_chars: int = PREFIX_BUDGET_CHARS,
     out_path: str | Path | None = None,
+    resume: bool = True,
     progress: Callable[[int, int, TrajectoryScores], None] | None = None,
 ) -> list[TrajectoryScores]:
+    """Score a corpus, appending to ``out_path`` and skipping completed files.
+
+    Resume is on by default because these runs are long and the box is shared:
+    losing an hour of finished work to someone else's memory spike is avoidable.
+    A file counts as done only when its row count matches its step count, so a
+    trajectory interrupted mid-way is redone rather than left short.
+    """
     results: list[TrajectoryScores] = []
-    fh = open(out_path, "w", encoding="utf-8") if out_path else None
+    done: set[str] = set()
+    if out_path and resume and Path(out_path).exists():
+        counts: dict[str, int] = {}
+        for row in load_scores(out_path):
+            counts[row.key] = counts.get(row.key, 0) + 1
+        want = {r.key: r.n_steps for r in records}
+        done = {k for k, n in counts.items() if n == want.get(k)}
+        stale = [k for k in counts if k not in done]
+        if stale:
+            # Drop partial trajectories so the file never holds a half-scored one.
+            rows = [r for r in load_scores(out_path) if r.key in done]
+            with open(out_path, "w", encoding="utf-8") as fh:
+                for r in rows:
+                    fh.write(json.dumps(r.to_dict()) + "\n")
+    fh = open(out_path, "a" if done else "w", encoding="utf-8") if out_path else None
     try:
         for i, rec in enumerate(records):
+            if rec.key in done:
+                continue
             ts = score_record(
                 rec,
                 client,

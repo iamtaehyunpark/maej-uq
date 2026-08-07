@@ -330,3 +330,43 @@ def test_deleg_window_stops_when_control_returns():
     ]
     # Control returns at step 2, so the window is just step 1 despite the cap.
     assert [s.idx for s in lookahead_steps(steps, 0, "deleg")] == [1]
+
+
+# --- resilience on a shared box ---------------------------------------------
+
+
+def test_resume_skips_completed_files_and_redoes_partial_ones(tmp_path):
+    from masattr.judge.score import load_scores, score_corpus
+
+    a, b = _rec(), _mixed()
+    out = tmp_path / "scores.jsonl"
+    score_corpus([a], MockClient(), out_path=out)
+    assert len({r.key for r in load_scores(out)}) == 1
+
+    # Append a half-scored trajectory, as a crash mid-file would leave.
+    rows = load_scores(out)
+    with out.open("a") as fh:
+        import json as _json
+
+        partial = score_corpus([b], MockClient())[0].scores[:2]
+        for r in partial:
+            fh.write(_json.dumps(r.to_dict()) + "\n")
+
+    score_corpus([a, b], MockClient(), out_path=out, resume=True)
+    got = load_scores(out)
+    counts = {}
+    for r in got:
+        counts[r.key] = counts.get(r.key, 0) + 1
+    # The finished file is not rescored, and the partial one is complete, not short.
+    assert counts[a.key] == a.n_steps
+    assert counts[b.key] == b.n_steps
+    _ = rows
+
+
+def test_resume_off_starts_clean(tmp_path):
+    from masattr.judge.score import load_scores, score_corpus
+
+    out = tmp_path / "s.jsonl"
+    score_corpus([_rec()], MockClient(), out_path=out)
+    score_corpus([_rec()], MockClient(), out_path=out, resume=False)
+    assert len(load_scores(out)) == _rec().n_steps
