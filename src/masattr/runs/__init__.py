@@ -2,6 +2,7 @@
 
 from . import (
     b1_sanity,
+    b4_coherence,
     baselines,
     e0_field,
     e1_primary,
@@ -46,6 +47,7 @@ COMMANDS = {
     "judge": judge,
     "baselines": baselines,
     "b1": b1_sanity,
+    "b4": b4_coherence,
     "e0": e0_field,
     "e1": e1_primary,
     "e2": e2_readout,
