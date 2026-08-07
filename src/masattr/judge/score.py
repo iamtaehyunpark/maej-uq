@@ -120,6 +120,10 @@ class StepScore:
     lookahead: str = "none"
     n_lookahead: int = 0
     n_demoted: int = 0
+    #: False when a generated readout could not be parsed. Such rows are scored
+    #: 0.5 and flagged, never dropped — discarding them would flatter whichever
+    #: readout is worst at following the format, which is what E2 measures.
+    parse_ok: bool = True
     prefix_tokens: int = 0
     readout_tokens: int = 0
     seconds: float = 0.0
@@ -414,12 +418,13 @@ def score_record(
 
         window = lookahead_steps(steps, t, lookahead)
         prompt = augment + render_lookahead(window) + readout(step, kind)
+        parse_ok = True
         if kind == "ptrue":
             p, trace = client.p_true(prompt)
             text = ""
         else:
             text, trace = client.generate(prompt, max_new_tokens=12)
-            p = _parse_generated(text, kind)
+            p, parse_ok = _parse_generated(text, kind)
 
         out.scores.append(
             StepScore(
@@ -442,6 +447,7 @@ def score_record(
                 lookahead=lookahead,
                 n_lookahead=len(window),
                 n_demoted=len(demoted),
+                parse_ok=parse_ok,
                 prefix_tokens=trace.prefix_tokens,
                 readout_tokens=trace.readout_tokens,
                 seconds=trace.seconds,
@@ -455,7 +461,7 @@ def score_record(
     return out
 
 
-def _parse_generated(text: str, kind: str) -> float:
+def _parse_generated(text: str, kind: str) -> tuple[float, bool]:
     """Turn a generated readout into a score.
 
     Unparseable generations become 0.5 and keep their raw text on the row —
@@ -466,17 +472,17 @@ def _parse_generated(text: str, kind: str) -> float:
     if kind == "binary":
         low = t.lower()
         if low.startswith("true") or low.startswith("yes"):
-            return 1.0
+            return 1.0, True
         if low.startswith("false") or low.startswith("no"):
-            return 0.0
-        return 0.5
+            return 0.0, True
+        return 0.5, False
     m = _NUM.search(t)
     if not m:
-        return 0.5
+        return 0.5, False
     v = float(m.group(1))
     if v > 1.0:
         v /= 100.0
-    return min(max(v, 0.0), 1.0)
+    return min(max(v, 0.0), 1.0), True
 
 
 def score_corpus(
@@ -582,6 +588,16 @@ def cost_summary(results: Iterable[TrajectoryScores]) -> dict[str, Any]:
             sum(1 for r in results for s in r.scores if s.n_demoted) / max(sum(steps), 1), 4
         ),
         "max_demoted_steps": max((s.n_demoted for r in results for s in r.scores), default=0),
+        # Parse failures are reported, not dropped: silently discarding them
+        # would flatter whichever readout follows the format worst.
+        "n_parse_failures": sum(
+            1 for r in results for s in r.scores if not s.parse_ok
+        ),
+        "parse_failure_rate": round(
+            sum(1 for r in results for s in r.scores if not s.parse_ok)
+            / max(sum(steps), 1),
+            4,
+        ),
     }
 
 
