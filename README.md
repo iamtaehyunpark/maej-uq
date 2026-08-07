@@ -5,13 +5,16 @@ transcript of a multi-agent system that failed, locate the decisive mistake:
 which agent, which step.
 
 The method is a typed, externally-estimated per-step error field. A judge scores
-every step prefix-conditionally; per-type calibration maps — fit once on a
-single-agent corpus and frozen — turn those scores into probabilities; the
-earliest step whose probability crosses the threshold is the attribution.
+every step prefix-conditionally; per-type statistics — fit by leave-one-file-out
+CV within each subset — put those scores on one scale; the decisive step is
+localised by reading the normalized field pointwise. Nothing is aggregated
+across steps.
 
-Implements [`docs/mas_attr_harness_spec_v2.md`](docs/mas_attr_harness_spec_v2.md).
-Module docstrings cite the section they implement. The port receipts are in
-[`PORT_REPORT.md`](PORT_REPORT.md).
+Implements [`docs/mas_attr_harness_spec_v2.md`](docs/mas_attr_harness_spec_v2.md)
+as amended by
+[`docs/mas_attr_harness_spec_v2_1_severance.md`](docs/mas_attr_harness_spec_v2_1_severance.md).
+Module docstrings cite the section they implement. Inventory and provenance are
+in [`BUILD_REPORT.md`](BUILD_REPORT.md).
 
 > **Status: pilot.** No data is committed and no numbers are claimed here. The
 > repository is the harness; the numbers come from running it on data you supply.
@@ -20,7 +23,7 @@ Module docstrings cite the section they implement. The port receipts are in
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/python -m pytest        # 136 tests, no data / GPU / network required
+.venv/bin/python -m pytest        # 144 tests, no data / GPU / network required
 ```
 
 Extras: `.[judge]` for the local-LM judge (torch + transformers), `.[openai]`
@@ -61,12 +64,14 @@ record-level anomalies. The five file ids are logged in every run manifest.
 ## Running the manifest
 
 ```bash
-masattr freeze                                     # hash prompts / type rules / type map
+masattr freeze                                     # hash prompts, type rules, and both spec files
 masattr load --assert                              # 126 / 58 / 4092 steps / 3+3 flagged
 masattr typecheck --audit-out audit.json           # rules vs HC parsed types, ≥90% gate
+masattr retype --splitter hf:<id> --judge hf:<id>  # gate + apply the plan/delegate splitter
 masattr judge --judge hf:<id>                      # × readout × policy × GT setting
-masattr e0 --paper1-scores p1.jsonl --scores runs/scores/*.jsonl
-masattr e1 --scores runs/scores/*.jsonl --calibration src/masattr/calib/frozen/calibration.json
+masattr e0 --scores runs/scores/*.jsonl            # field sanity, threshold stability, primary rule
+masattr e1 --scores runs/scores/*.jsonl --folds runs/normalize/folds.json \
+           --decision runs/out/e0_decision.json
 masattr baselines --generators openai:gpt-4o judge:hf:<id> --impl repo --repo-path <checkout>
 masattr e2 / e3 / e4 / e5 / e6 / e7                # ablations
 masattr e9 --e1-results runs/out/results.json      # stratification, no new runs
@@ -83,13 +88,13 @@ src/masattr/
   record.py       frozen record — every stage consumes and returns this
   paths.py manifest.py cli.py
   loaders/        whowhen_ag.py whowhen_hc.py _common.py
-  typing/         normalize.py (HC parse + AG rules)  validate.py (the gate)
+  typing/         normalize.py (HC parse + AG rules)  validate.py (gate)  refine.py (splitter)
   judge/          client.py prompts.py score.py
-  calib/          fit.py apply.py frozen/
+  normalize/      fit.py (leave-one-out CV)  apply.py (z-scoring, field sanity)
   attribute/      rules.py
   eval/           scorers.py ci.py
   baselines/      whowhen_repo.py surrogate.py
-  specs/          frozen prompts, type rules, type map, hashes
+  specs/          frozen prompts, type rules, E0 criteria, judge ids, hashes
   runs/           one file per experiment, argparse only
 ```
 
@@ -145,19 +150,23 @@ of assessments**, which is a limitations sentence, not a surprise, because
 binary verdict share the preamble and the question; only the final instruction
 differs. That is what makes E2 an ablation rather than three methods.
 
-**Calibration is fit once, frozen, and hash-checked.** `FrozenCalibration.load`
-refuses a file whose `content_hash` no longer matches its contents. Thresholds
-are fit **per type** — §5's "crosses *its* calibrated threshold" — with the
-pooled threshold as fallback and as E4's global-threshold arm. They are chosen
-on the *fitting* corpus and travel with the maps; `masattr e1` refuses to run
-without one rather than picking a threshold on the corpus it is scoring. The
-paper-1 τ → function-type table must be marked `"status": "frozen"` before E0
-will run.
+**Normalization is leave-one-file-out, so nothing is scored under statistics
+that saw it.** Per-type mean/sd and the crossing threshold are fit on every
+*other* file in the subset; each file is z-scored under its own fold. Subsets
+are normalized independently. Thresholds are fit **per type**, with the pooled
+threshold as fallback and as E4's global-threshold arm. `masattr e1` refuses to
+run without folds rather than picking a threshold on the corpus it is scoring,
+and the raw score stays on every row beside `p_norm`.
 
-**E0 is a real falsifier.** It runs first, its gates are pre-registered in the
-module, and it exits **2** when transfer fails — a legitimate outcome that puts
-the disclosed leave-one-out fallback in force and weakens the uniformity claim
-in the paper text.
+**E0 fixes the primary rule before it can see the outcome.** It asks two
+questions — is there a field to localize (per-type distributions, plus
+constant / saturated / near-binary checks), and is the threshold stable across
+folds — and reads its decision bound from `specs/e0_criteria.json`, which must
+be marked `registered` before it will run. If the worst cross-fold threshold CV
+exceeds the bound, the primary rule switches to the threshold-free set
+(`relative_crossing`, argmin, changepoint) and first-crossing demotes to an
+ablation. The decision and the criterion hash go in the manifest, and `masattr
+e1 --decision` reads the rule from the file rather than defaulting.
 
 **Ablations refuse single arms.** `masattr e2` stops if every input score file
 has the same readout. A one-row ablation is not an ablation.
@@ -177,17 +186,11 @@ the live prompts and type rules still match `specs/` before it starts.
   the default `prefix` policy uses steps `0..mistake_step` with
   `correct = idx < mistake_step`, excluding the post-mistake tail rather than
   guessing it. The `point` policy keeps every step and asserts the tail is fine.
-  Documented at the top of `calib/apply.py`; both are pre-registered.
-- **E0 needs paper 1's corpus scored by this judge** — one JSONL row per judged
-  step: `{step_id, arm, model, benchmark, step_kind, tau{info, world_mod,
-  reversible, cost}, p_raw, judge_model, label_correct}`, where `p_raw` is the
-  raw single-probe P(True), never a combined score. Rows are filtered to the
-  transferring judge. Without it `masattr e0` stops; it will not quietly
-  calibrate on Who&When, which is the very thing the fallback is meant to
-  disclose.
-- **The paper-1 type map is data, not code.** It lives in
-  `specs/paper1_type_map.json`, is hashed into every manifest, and unmapped
-  source types become `unknown` and are counted — never silently dropped.
+  Documented at the top of `normalize/fit.py`; both are pre-registered.
+- **Two spec files start as drafts on purpose.** `specs/e0_criteria.json` must
+  be `registered` before E0 runs, and `specs/judge.json` must be `confirmed`
+  before any reported run. Both are owner-set; the code refuses rather than
+  defaults.
 - **The surrogate baseline is a surrogate.** Frozen logs do not carry the
   generating model's distributions. A proxy LM's logprob and entropy are the
   closest computable thing, they are uncalibrated, and they are expected to be
@@ -197,5 +200,6 @@ the live prompts and type rules still match `specs/` before it starts.
   stamped `impl=local` and the manifest says so.
 - **E8 (success-control) is not built.** Part D gates it behind an explicit owner
   decision.
-- **The port source was substituted.** Paper 1's harness was unavailable; the
-  allowlisted components were re-derived from the v1 package. See PORT_REPORT.
+- **The package is over the ≤2.5k LOC target** at ~3.9k code lines. BUILD_REPORT
+  lists what would come out first if the target is hard; the overage is
+  experiment surface, not abstraction.

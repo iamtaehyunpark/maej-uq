@@ -8,6 +8,13 @@ decisive error is the first one, and everything after it is contamination.
 Ablations: ``argmin``; ``changepoint`` (binary segmentation, one frozen
 hyperparameter); ``agent_first`` (per-agent max ``p`` selects the agent, then
 first-crossing inside that agent's steps).
+
+**Threshold-free set.** ``first_crossing`` and ``agent_first`` depend on a
+crossing threshold estimated across files. If E0 finds that threshold unstable
+across folds, a rule resting on it is not a rule worth reporting, and the
+pre-registered criterion promotes the threshold-free set instead:
+``argmin``, ``changepoint``, and ``relative_crossing``, none of which needs a
+value carried in from outside the trajectory being scored.
 """
 
 from __future__ import annotations
@@ -24,6 +31,11 @@ from ..typing.normalize import is_orchestrator
 #: Frozen changepoint hyperparameter: minimum segment length, in steps. One
 #: knob, fixed here, so the ablation cannot be tuned into a win.
 CHANGEPOINT_MIN_SEG = 2
+
+#: Frozen relative-crossing hyperparameter: how many of the trajectory's own
+#: standard deviations below its own mean a step must fall. One knob, fixed
+#: here for the same reason.
+RELATIVE_K = 1.0
 
 
 @dataclass(slots=True)
@@ -149,23 +161,71 @@ def agent_first(scores: Sequence[StepScore], threshold: Threshold) -> Attributio
     )
 
 
+def relative_crossing(scores: Sequence[StepScore], threshold: Threshold = 0.0) -> Attribution:
+    """Earliest step falling ``RELATIVE_K`` sd below the trajectory's own mean.
+
+    Threshold-free: the comparison is entirely within the trajectory being
+    scored, so nothing is carried in from other files. It keeps first-crossing's
+    temporal-prior shape — the decisive error is the *first* one — while
+    surviving an unstable cross-file threshold.
+
+    Falls back to argmin when nothing stands out, for the same reason
+    first_crossing does: every trajectory here failed, so declining to answer
+    would drop files from the denominator rather than score a miss.
+    """
+    if not scores:
+        return Attribution("", "relative_crossing", None, None)
+    p = np.asarray(_p(scores), dtype=float)
+    sd = float(p.std(ddof=0))
+    if sd <= 0:
+        return _at(scores, int(np.argmin(p)), "relative_crossing", {"degenerate": True})
+    cut = float(p.mean()) - RELATIVE_K * sd
+    for i, v in enumerate(p):
+        if v < cut:
+            return _at(scores, i, "relative_crossing", {"crossed": True, "cut": cut, "k": RELATIVE_K})
+    i = int(np.argmin(p))
+    return _at(scores, i, "relative_crossing", {"crossed": False, "fallback": "argmin", "cut": cut})
+
+
 METHODS: dict[str, Callable[..., Attribution]] = {
     "first_crossing": first_crossing,
     "argmin": argmin,
     "changepoint": changepoint,
     "agent_first": agent_first,
+    "relative_crossing": relative_crossing,
 }
+
+#: Rules needing a threshold estimated across files.
+THRESHOLD_DEPENDENT = ("first_crossing", "agent_first")
+
+#: Rules that read only the trajectory in front of them.
+THRESHOLD_FREE = ("argmin", "changepoint", "relative_crossing")
+
+#: Default primary. E0's pre-registered criterion may promote a threshold-free
+#: rule instead; the runs read the decision rather than this constant.
 PRIMARY = "first_crossing"
 
 
 def attribute(
-    scores_by_file: dict[str, list[StepScore]], *, threshold: Threshold, method: str = PRIMARY
+    scores_by_file: dict[str, list[StepScore]],
+    *,
+    threshold: Threshold = 0.0,
+    method: str = PRIMARY,
+    per_file: Mapping[str, Threshold] | None = None,
 ) -> dict[str, Attribution]:
+    """Run one rule over every file.
+
+    ``per_file`` carries each file's own threshold — under leave-one-out
+    normalization the threshold is a property of the fold, not of the corpus, so
+    a single global value would apply statistics fit *with* the file to the file
+    itself.
+    """
     fn = METHODS[method]
     out = {}
     for key, rows in scores_by_file.items():
         rows = sorted(rows, key=lambda s: s.step_idx)
-        a = fn(rows, threshold)
+        thr = (per_file or {}).get(key, threshold)
+        a = fn(rows, thr)
         a.key = key
         out[key] = a
     return out

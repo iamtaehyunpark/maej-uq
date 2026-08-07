@@ -10,13 +10,13 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from .. import paths as paths_mod
 from ..attribute.rules import METHODS, PRIMARY, attribute
-from ..calib.fit import FrozenCalibration
-from ..calib.apply import apply_to, held_aside
 from ..eval.scorers import gold_map, score_all
+from ..normalize.apply import apply_folds, thresholds_for
+from ..normalize.fit import load_folds
 from ..judge.client import build_client
 from ..judge.score import PREFIX_BUDGET_CHARS, StepScore, by_file, load_scores, score_corpus
 from ..loaders.whowhen_ag import load as load_alg
@@ -147,12 +147,8 @@ def score(
     return by_file([s for ts in results for s in ts.scores])
 
 
-def read_scores(path: str | Path, cal: FrozenCalibration | None = None) -> dict[str, list[StepScore]]:
-    grouped = by_file(load_scores(path))
-    if cal:
-        for rows in grouped.values():
-            apply_to(rows, cal)
-    return grouped
+def read_scores(path: str | Path) -> dict[str, list[StepScore]]:
+    return by_file(load_scores(path))
 
 
 #: The axes a score row records about how it was produced. Grouping on these is
@@ -179,7 +175,7 @@ def config_label(cfg: tuple) -> str:
 
 
 def read_configs(
-    paths: Sequence[str | Path], cal: FrozenCalibration | None = None
+    paths: Sequence[str | Path], folds: Mapping[str, Any] | None = None, *, typed: bool = True
 ) -> dict[tuple, dict[str, list[StepScore]]]:
     """Read many score files and group rows by the config that produced them.
 
@@ -188,14 +184,13 @@ def read_configs(
     """
     out: dict[tuple, dict[str, list[StepScore]]] = {}
     for path in paths:
-        rows = load_scores(path)
-        if cal:
-            apply_to(rows, cal)
-        for row in rows:
+        for row in load_scores(path):
             out.setdefault(config_of(row), {}).setdefault(row.key, []).append(row)
     for grouped in out.values():
         for rows in grouped.values():
             rows.sort(key=lambda s: s.step_idx)
+        if folds:
+            apply_folds(grouped, folds, typed=typed, strict=False)
     return out
 
 
@@ -216,7 +211,8 @@ def attribution_table(
     records: Sequence[Record],
     scores_by_file: dict[str, list[StepScore]],
     *,
-    threshold: float,
+    threshold: float = 0.0,
+    per_file: Mapping[str, Any] | None = None,
     methods: Iterable[str] = tuple(METHODS),
     held: Iterable[str] = (),
     n_boot: int = 2000,
@@ -228,7 +224,7 @@ def attribution_table(
     table: dict[str, dict] = {}
     preds: dict[str, dict] = {}
     for method in methods:
-        p = attribute(usable, threshold=threshold, method=method)
+        p = attribute(usable, threshold=threshold, method=method, per_file=per_file)
         preds[method] = p
         table[method] = score_all(
             p, gold, records, held_aside=held, n_boot=n_boot, seed=seed
@@ -237,14 +233,17 @@ def attribution_table(
 
 
 def held_aside_keys(records: Sequence[Record], seed: int) -> set[str]:
-    try:
-        return held_aside(records, seed=seed)
-    except ValueError:
-        return set()  # corpus too small (fixtures); dual reporting simply collapses
+    """No held-aside slice under leave-one-out normalization.
+
+    Every file is already normalized under statistics fit without it, so there
+    is no subset that saw the fitting data and needs excluding. Kept as a hook
+    so the slice machinery stays uniform.
+    """
+    return set()
 
 
-def primary_row(table: dict[str, dict], slice_name: str = "all") -> dict:
-    return table.get(PRIMARY, {}).get(f"exact/{slice_name}", {})
+def primary_row(table: dict[str, dict], primary: str = PRIMARY, slice_name: str = "all") -> dict:
+    return table.get(primary, {}).get(f"exact/{slice_name}", {})
 
 
 # --- output -----------------------------------------------------------------
@@ -279,15 +278,29 @@ def run_config_tables(
     records = flatten(load_records(args))
     by_key = {r.key: r for r in records}
 
-    cal = FrozenCalibration.load(args.calibration) if getattr(args, "calibration", None) else None
-    if cal and getattr(args, "pooled_calibration", False):
-        cal = cal.pooled_only()
-    if cal:
-        manifest.calibration_hash = cal.content_hash()
-    threshold = resolve_threshold(args, cal)
+    typed_norm = not getattr(args, "pooled_normalization", False)
+    folds = load_folds(args.folds) if getattr(args, "folds", None) else None
+    per_file = (
+        thresholds_for(folds, typed=not getattr(args, "global_threshold", False))
+        if folds
+        else {}
+    )
+    threshold = float(args.threshold) if getattr(args, "threshold", None) is not None else 0.0
+    if not folds and getattr(args, "threshold", None) is None:
+        raise SystemExit(
+            "no normalization: pass --folds (E0 writes them) or an explicit "
+            "--threshold. Scoring raw judge output against a threshold picked "
+            "here would apply statistics fit on the files being scored."
+        )
+    primary, decision = resolve_primary(args)
     manifest.record_anomalies(records)
+    if decision:
+        manifest.note(
+            f"primary rule {primary!r} from E0's pre-registered criterion "
+            f"(hash {decision.get('criterion_hash')})"
+        )
 
-    configs = read_configs(args.scores, cal)
+    configs = read_configs(args.scores, folds, typed=typed_norm)
     if not configs:
         raise SystemExit(f"no score rows found in {args.scores}")
     varied = varied_axes(configs)
@@ -303,11 +316,12 @@ def run_config_tables(
     lengths = {r.key: r.n_steps for r in records}
     held = held_aside_keys(records, args.seed)
     results: dict[str, Any] = {
-        "threshold": threshold,
-        "typed_thresholds": isinstance(threshold, dict),
-        "pooled_calibration": bool(getattr(args, "pooled_calibration", False)),
-        "calibrated": bool(cal),
-        "calibration_hash": manifest.calibration_hash,
+        "primary_rule": primary,
+        "e0_decision": decision,
+        "typed_normalization": typed_norm,
+        "typed_thresholds": not getattr(args, "global_threshold", False),
+        "normalized": bool(folds),
+        "n_folds": len(folds or {}),
         "held_aside": sorted(held),
         "varied_axes": varied,
         "configs": {},
@@ -321,17 +335,18 @@ def run_config_tables(
             subset_records,
             scores,
             threshold=threshold,
+            per_file=per_file,
             methods=methods,
             held=held,
             n_boot=args.n_boot,
             seed=args.seed,
         )
         dis_type = disagreement(
-            preds[PRIMARY], preds["agent_first"], strata=type_strata(scores, preds[PRIMARY])
+            preds[primary], preds["agent_first"], strata=type_strata(scores, preds[primary])
         )
         dis_role = (
             disagreement(
-                preds[PRIMARY], preds["agent_first"], strata=role_strata(preds[PRIMARY])
+                preds[primary], preds["agent_first"], strata=role_strata(preds[primary])
             )
             if subset == "hc"
             else []
@@ -367,43 +382,36 @@ def run_config_tables(
     return 0
 
 
-def resolve_threshold(args: argparse.Namespace, cal: FrozenCalibration | None):
-    """The crossing threshold, which must come from the calibration corpus.
+def resolve_primary(args: argparse.Namespace) -> tuple[str, dict | None]:
+    """The primary rule, taken from E0's pre-registered decision when present.
 
-    Picking it on Who&When would leak: it is the one free parameter of the
-    primary rule, and the corpus it is tuned on is the corpus being scored.
-
-    Returns a per-type mapping when the calibration carries one (§5's "crosses
-    *its* calibrated threshold"), or a bare float under ``--global-threshold``,
-    which is E4's global-threshold arm.
+    E0 fixes its criterion before it runs and writes the resulting rule to
+    ``e0_decision.json``. Reading it here — rather than defaulting to
+    ``first_crossing`` and mentioning the switch in prose — is what makes the
+    pre-registration binding on the numbers.
     """
-    if getattr(args, "threshold", None) is not None:
-        return float(args.threshold)
-    if getattr(args, "threshold_file", None):
-        blob = json.loads(Path(args.threshold_file).read_text())
-        if not getattr(args, "global_threshold", False) and blob.get("thresholds"):
-            return {**blob["thresholds"], "": float(blob["threshold"])}
-        return float(blob["threshold"])
-    if cal is not None:
-        if getattr(args, "global_threshold", False) or not cal.thresholds:
-            return cal.threshold
-        return {**cal.thresholds, "": cal.threshold}
-    raise SystemExit(
-        "no threshold: pass --calibration (E0's frozen map carries one), "
-        "--threshold-file, or an explicit --threshold. Choosing it on Who&When "
-        "would leak."
-    )
+    path = getattr(args, "decision", None)
+    if not path:
+        return PRIMARY, None
+    decision = json.loads(Path(path).read_text(encoding="utf-8"))
+    primary = decision.get("primary_rule", PRIMARY)
+    if primary not in METHODS:
+        raise SystemExit(f"{path}: unknown primary rule {primary!r}; known: {sorted(METHODS)}")
+    return primary, decision
 
 
 def add_attribution_args(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
     p.add_argument("--scores", nargs="+", required=True, help="step-score JSONL(s)")
-    p.add_argument("--calibration", help="frozen calibration JSON from E0")
-    p.add_argument("--threshold", type=float)
-    p.add_argument("--threshold-file", help="threshold.json written by E0")
+    p.add_argument("--folds", help="fold statistics JSON written by E0")
+    p.add_argument("--threshold", type=float, help="override the fitted threshold")
     p.add_argument(
-        "--pooled-calibration",
+        "--decision",
+        help="e0_decision.json — sets the primary rule from E0's pre-registered criterion",
+    )
+    p.add_argument(
+        "--pooled-normalization",
         action="store_true",
-        help="E4 arm: apply the pooled map instead of the per-type maps",
+        help="E4 arm: one set of statistics for every type instead of per-type",
     )
     p.add_argument(
         "--global-threshold",

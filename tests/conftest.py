@@ -8,7 +8,6 @@ loaders are actually being tested against. No real data is committed.
 from __future__ import annotations
 
 import json
-import random
 from pathlib import Path
 
 import pytest
@@ -71,44 +70,6 @@ def data_root(tmp_path_factory) -> Path:
     for i in range(3):
         (hc / f"hc_{i}.json").write_text(json.dumps(_hc_file(i)))
     return root
-
-
-@pytest.fixture(scope="session")
-def paper1_scores(tmp_path_factory) -> Path:
-    """A stand-in for paper 1's step-labeled corpus, already scored by a judge.
-
-    The judge is deliberately overconfident here — true correctness rate is
-    ``p**2`` — so a working calibration has something to fix.
-    """
-    path = tmp_path_factory.mktemp("paper1") / "scores.jsonl"
-    rng = random.Random(0)
-    kinds = ["thought", "action"]
-    with path.open("w") as fh:
-        for i in range(3000):
-            p = rng.random()
-            kind = kinds[i % 2]
-            fh.write(
-                json.dumps(
-                    {
-                        "step_id": f"s{i}",
-                        "arm": "decoupled",
-                        "model": "acting-model",
-                        "benchmark": "alfworld" if i % 3 else "hotpotqa",
-                        "step_kind": kind,
-                        "tau": {
-                            "info": kind == "action" and i % 4 == 1,
-                            "world_mod": kind == "action" and i % 4 != 1,
-                            "reversible": True,
-                            "cost": "low",
-                        },
-                        "p_raw": p,
-                        "judge_model": "hf:Qwen3.6-35B-A3B" if i % 10 else "hf:other-judge",
-                        "label_correct": rng.random() < p**2,
-                    }
-                )
-                + "\n"
-            )
-    return path
 
 
 @pytest.fixture()
@@ -187,3 +148,27 @@ def parquet_root(tmp_path_factory) -> Path:
         )
     pq.write_table(pa.Table.from_pylist(hc), root / "Hand-Crafted.parquet")
     return root.parent
+
+
+@pytest.fixture()
+def register_criteria(tmp_path, monkeypatch):
+    """Register E0's decision criteria for a test, without touching the repo.
+
+    E0 refuses draft criteria, and the spec-drift check refuses criteria that do
+    not match the frozen hash — both guards are the point, so tests satisfy them
+    properly rather than switching them off: the criteria file and the hash file
+    are both redirected into tmp, then frozen together.
+    """
+    from masattr import specs
+
+    def register(**overrides):
+        blob = {**specs.e0_criteria(), **overrides, "status": "registered"}
+        path = tmp_path / "e0_criteria.json"
+        path.write_text(json.dumps(blob, indent=2))
+        monkeypatch.setattr(specs, "E0_CRITERIA_FILE", path)
+        monkeypatch.setattr(specs, "HASHES_FILE", tmp_path / "hashes.json")
+        monkeypatch.setattr("masattr.runs.e0_field.e0_criteria", lambda: blob)
+        specs.freeze()
+        return blob
+
+    return register

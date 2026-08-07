@@ -1,4 +1,4 @@
-"""Bootstrap CIs and reliability diagrams (ported from paper 1).
+"""Bootstrap CIs and reliability diagrams.
 
 Every Who&When number is reported with a bootstrap CI **over files** — the file
 is the sampling unit (n=126/58), and resampling steps would treat one

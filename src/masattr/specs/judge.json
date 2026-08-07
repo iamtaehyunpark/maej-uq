@@ -1,0 +1,18 @@
+{
+  "status": "draft",
+  "_comment": [
+    "Judge and type-classifier identities, and the family-disjointness record.",
+    "STATUS MUST BE 'confirmed' BEFORE ANY REPORTED RUN. Owner sets the ids.",
+    "Rationale is recorded on standalone merits: open weights with per-token",
+    "logit access (required for the single-token readout), mid-scale so a",
+    "130-step trajectory fits the prefix budget on available hardware, and cheap",
+    "enough to run every ablation arm over both subsets.",
+    "The type-classifier must be family-disjoint from BOTH judge families:",
+    "typing conditions the judge's evidence policy, so any shared family closes",
+    "a loop."
+  ],
+  "primary_judge": "hf:Qwen3.6-35B-A3B",
+  "sensitivity_judge": "",
+  "type_classifier": "",
+  "labeling_judge": ""
+}

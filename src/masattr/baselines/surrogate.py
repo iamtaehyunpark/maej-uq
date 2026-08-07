@@ -5,10 +5,10 @@ true intrinsic uncertainty signal is recoverable here. What is computable is how
 a third-party proxy LM scores the recorded text: per-step mean token logprob and
 mean token entropy of ``content``.
 
-It feeds the *same* attribution rules as the judge field — argmin and
-first-crossing applied identically — so E7 is a fair comparison of signals, not
-of pipelines. It is expected to be weak, and that is the point: it is the
-control showing the judge signal is not merely fluency.
+It feeds the *same* attribution rules as the judge field — applied identically —
+so E7 is a fair comparison of signals, not of pipelines. It is expected to be
+weak, and that is the point: it is the control showing the judge signal is not
+merely fluency.
 """
 
 from __future__ import annotations

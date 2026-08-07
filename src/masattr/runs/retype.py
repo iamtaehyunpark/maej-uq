@@ -33,7 +33,8 @@ from ._shared import add_common, load_records, open_manifest
 def build_parser() -> argparse.ArgumentParser:
     p = add_common(argparse.ArgumentParser(prog="masattr retype", description=__doc__))
     p.add_argument("--splitter", default="mock", help="mock | hf:<model_id>")
-    p.add_argument("--judge", default="", help="the judge this must be disjoint from")
+    p.add_argument("--judge", default="", help="the primary judge this must be disjoint from")
+    p.add_argument("--sensitivity-judge", default="", help="the second judge family, likewise")
     p.add_argument("--device")
     p.add_argument("--out-cache", help="directory to write retyped records into")
     p.add_argument(
@@ -47,7 +48,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     manifest = open_manifest("retype", args)
-    manifest.record_models(type_classifier=args.splitter, judge=args.judge)
+    manifest.record_models(
+        type_classifier=args.splitter,
+        judge=args.judge,
+        sensitivity_judge=args.sensitivity_judge,
+    )
 
     records = load_records(args)
     if "hc" not in records:
@@ -57,7 +62,11 @@ def main(argv=None) -> int:
         )
 
     splitter = build_splitter(
-        args.splitter, judge_model=args.judge, device=args.device, seed=args.seed
+        args.splitter,
+        judge_model=args.judge,
+        sensitivity_judge=args.sensitivity_judge,
+        device=args.device,
+        seed=args.seed,
     )
     report = validate_splitter(records["hc"], splitter)
     print(report.render())

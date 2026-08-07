@@ -59,7 +59,13 @@ class Manifest:
         from .models import check_disjoint, families
 
         self.model_families = {**self.model_families, **families(**roles)}
-        for a, b in (("type_classifier", "judge"), ("judge", "labeling_judge")):
+        # The type-classifier must be disjoint from *both* judge families
+        # (v2.1 §3): typing conditions the evidence policy either judge reads.
+        for a, b in (
+            ("type_classifier", "judge"),
+            ("type_classifier", "sensitivity_judge"),
+            ("judge", "labeling_judge"),
+        ):
             if roles.get(a) and roles.get(b):
                 problem = check_disjoint(a, roles[a], b, roles[b], strict=False)
                 if problem:

@@ -1,0 +1,20 @@
+{
+  "status": "draft",
+  "_comment": [
+    "Pre-registered decision criteria for E0. Read BEFORE E0 runs and hashed",
+    "into the run manifest, so the rule that follows from the outcome cannot be",
+    "chosen after the outcome is visible.",
+    "STATUS MUST BE 'registered' BEFORE E0 RUNS. Owner sets the bounds.",
+    "max_threshold_cv: if the worst cross-fold coefficient of variation of a",
+    "crossing threshold exceeds this, the primary attribution rule switches from",
+    "first_crossing to the threshold-free set and first_crossing demotes to an",
+    "ablation.",
+    "max_degenerate_cells: how many (subset x type) cells may be constant,",
+    "saturated, or near-binary before the field is called unusable."
+  ],
+  "max_threshold_cv": 0.25,
+  "max_degenerate_cells": 0,
+  "threshold_free_rules": ["argmin", "changepoint", "relative_crossing"],
+  "threshold_primary": "first_crossing",
+  "threshold_free_primary": "relative_crossing"
+}

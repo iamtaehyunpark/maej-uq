@@ -10,8 +10,9 @@ Two paths, and the distinction is load-bearing:
   ``unknown`` is allowed — a wrong type is worse than an absent one, because the
   calibration maps are per-type.
 
-This is new code, not an adaptation of paper-1's τ rules: those keyed off
-environment consequences, and there is no environment here.
+The type space is a property of the multi-agent setting: what a step *does for
+the system* — plan, delegate, execute, emit the answer — rather than what it
+does to an environment. There is no environment here to key off.
 """
 
 from __future__ import annotations

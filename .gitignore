@@ -16,7 +16,5 @@ venv/
 /out/
 *.pkl
 
-# Frozen calibration maps are a run artifact — they depend on which judge
-# scored the corpus — so only the explainer is tracked.
-/src/masattr/calib/frozen/*.json
-!/src/masattr/calib/frozen/README.md
+# Fitted normalization statistics are a run artifact — they depend on which
+# judge scored the corpus — so they live under /runs/ and are not tracked.

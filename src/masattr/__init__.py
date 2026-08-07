@@ -2,10 +2,11 @@
 
 Failure attribution over frozen multi-agent trajectories: load Who&When into one
 record type, normalise step act-types, judge every step prefix-conditionally,
-calibrate per type with maps fit once on paper 1's single-agent corpus, then
-localise the decisive mistake by first crossing.
+normalise the scores per type by leave-one-file-out CV, then localise the
+decisive mistake.
 
-Implements ``docs/mas_attr_harness_spec_v2.md``. Module docstrings cite the
+Implements ``docs/mas_attr_harness_spec_v2.md`` as amended by
+``docs/mas_attr_harness_spec_v2_1_severance.md``. Module docstrings cite the
 section they implement.
 """
 

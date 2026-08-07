@@ -2,7 +2,7 @@
 
 from . import (
     baselines,
-    e0_transfer,
+    e0_field,
     e1_primary,
     e2_readout,
     e3_rules,
@@ -41,7 +41,7 @@ COMMANDS = {
     "retype": retype,
     "judge": judge,
     "baselines": baselines,
-    "e0": e0_transfer,
+    "e0": e0_field,
     "e1": e1_primary,
     "e2": e2_readout,
     "e3": e3_rules,

@@ -10,8 +10,9 @@ Three evidence policies, which are what E5 ablates:
   earlier same-turn peers when an ``execute`` step is near-empty.
 * ``plain`` — prefix 0..t and nothing else.
 * ``hindsight`` — the whole trajectory as the shared prefix for every step. Not
-  a method: the ceiling figure. It is the one context-swap kept from paper 1's
-  hindsight harness.
+  a method: the ceiling figure, bounding how much of the gap to perfect
+  attribution is the judge's reasoning rather than the information the
+  prefix-conditional setting withholds by construction.
 """
 
 from __future__ import annotations
@@ -65,7 +66,9 @@ class StepScore:
     type_norm: str
     type_source: str
     p_raw: float
-    p_cal: float | None = None
+    #: z-scored under the file's leave-one-out fold statistics. The raw score
+    #: stays beside it so both are visible downstream and in the JSONL.
+    p_norm: float | None = None
     augmented: bool = False
     judge: str = ""
     readout: str = "ptrue"
@@ -87,7 +90,8 @@ class StepScore:
 
     @property
     def p(self) -> float:
-        return self.p_cal if self.p_cal is not None else self.p_raw
+        """The score the rules read: normalized when available, raw otherwise."""
+        return self.p_norm if self.p_norm is not None else self.p_raw
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

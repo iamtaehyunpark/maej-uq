@@ -41,7 +41,7 @@ def _judge(data_root, tmp_path, extra=()):
 
 def test_freeze_and_verify_round_trip():
     hashes = specs.freeze()
-    assert set(hashes) == {"prompts", "type_rules", "paper1_type_map"}
+    assert set(hashes) == {"prompts", "type_rules", "e0_criteria", "judge"}
     assert specs.verify(strict=True) == []
 
 
@@ -78,39 +78,10 @@ def test_judge_writes_scores_and_a_manifest(data_root, tmp_path, capsys):
     assert manifest["commit"]
 
 
-def test_e0_fits_freezes_and_decides(data_root, tmp_path, paper1_scores, capsys):
-    scores = _judge(data_root, tmp_path)
-    capsys.readouterr()
-    frozen = tmp_path / "cal.json"
-    rc = main(
-        [
-            "e0",
-            *_base(data_root, tmp_path, "e0"),
-            "--paper1-scores",
-            str(paper1_scores),
-            "--scores",
-            *scores,
-            "--frozen-out",
-            str(frozen),
-            "--held-aside-per-subset",
-            "2",
-            "--allow-draft-type-map",
-            "--judge-model",
-            "hf:Qwen3.6-35B-A3B",
-        ]
-    )
-    assert rc in (0, 2)  # 2 = falsified, a legitimate pre-registered outcome
-    assert frozen.exists()
-    res = json.loads((tmp_path / "e0" / "results.json").read_text())
-    assert "decision" in res and res["gates"]["max_ece_increase"] == 0.02
-    assert len(res["held_aside_files"]) == 4  # fixtures: 2 per subset via fallback
-    assert (tmp_path / "e0" / "threshold.json").exists()
-
-
 def test_e1_refuses_a_threshold_it_would_have_to_invent(data_root, tmp_path, capsys):
     scores = _judge(data_root, tmp_path)
     capsys.readouterr()
-    with pytest.raises(SystemExit, match="leak"):
+    with pytest.raises(SystemExit, match="statistics fit on the files being scored"):
         main(["e1", *_base(data_root, tmp_path, "e1"), "--scores", *scores])
 
 
@@ -121,7 +92,13 @@ def test_e1_primary_table(data_root, tmp_path, capsys):
     assert rc == 0
     res = json.loads((tmp_path / "e1" / "results.json").read_text())
     cfg = next(iter(res["configs"].values()))
-    assert set(cfg["scores"]) == {"first_crossing", "argmin", "changepoint", "agent_first"}
+    assert set(cfg["scores"]) == {
+        "first_crossing",
+        "argmin",
+        "changepoint",
+        "agent_first",
+        "relative_crossing",
+    }
     variants = set(cfg["scores"]["first_crossing"])
     assert {"exact/all", "substring/all", "exact/excl_flagged"} <= variants
     md = (tmp_path / "e1" / "results.md").read_text()
@@ -297,69 +274,6 @@ def test_retype_refuses_a_same_family_splitter(data_root, tmp_path):
         )
 
 
-def test_e0_refuses_a_draft_type_map(data_root, tmp_path, paper1_scores, capsys):
-    scores = _judge(data_root, tmp_path)
-    capsys.readouterr()
-    with pytest.raises(Exception, match="frozen"):
-        main(
-            [
-                "e0",
-                *_base(data_root, tmp_path, "e0draft"),
-                "--paper1-scores",
-                str(paper1_scores),
-                "--scores",
-                *scores,
-                "--held-aside-per-subset",
-                "2",
-            ]
-        )
-
-
-def test_e0_filters_by_judge_model(data_root, tmp_path, paper1_scores, capsys):
-    scores = _judge(data_root, tmp_path)
-    capsys.readouterr()
-    main(
-        [
-            "e0",
-            *_base(data_root, tmp_path, "e0f"),
-            "--paper1-scores",
-            str(paper1_scores),
-            "--scores",
-            *scores,
-            "--held-aside-per-subset",
-            "2",
-            "--allow-draft-type-map",
-            "--judge-model",
-            "hf:Qwen3.6-35B-A3B",
-        ]
-    )
-    res = json.loads((tmp_path / "e0f" / "results.json").read_text())
-    intake = res["intake"]
-    assert intake["n_filtered_by_judge_model"] == 300  # the 1-in-10 other-judge rows
-    assert intake["n_rows_used"] == 2700
-    assert set(intake["judge_models_present"]) == {"hf:Qwen3.6-35B-A3B", "hf:other-judge"}
-
-
-def test_e0_threshold_file_carries_per_type_thresholds(data_root, tmp_path, paper1_scores, capsys):
-    scores = _judge(data_root, tmp_path)
-    capsys.readouterr()
-    main(
-        [
-            "e0",
-            *_base(data_root, tmp_path, "e0t"),
-            "--paper1-scores",
-            str(paper1_scores),
-            "--scores",
-            *scores,
-            "--held-aside-per-subset",
-            "2",
-            "--allow-draft-type-map",
-        ]
-    )
-    blob = json.loads((tmp_path / "e0t" / "threshold.json").read_text())
-    assert "thresholds" in blob and blob["thresholds"]
-
-
 def test_e5_prefix_window_is_an_ablation_arm(data_root, tmp_path, capsys):
     a = _judge(data_root, tmp_path)
     b = _judge(data_root, tmp_path, extra=["--prefix-window", "2"])
@@ -370,23 +284,115 @@ def test_e5_prefix_window_is_an_ablation_arm(data_root, tmp_path, capsys):
     assert "prefix_window" in res["varied_axes"]
 
 
-def test_e4_pooled_calibration_arm(data_root, tmp_path, paper1_scores, capsys):
+
+
+# --- E0 redefined: field sanity + threshold stability -----------------------
+
+
+def test_e0_refuses_unregistered_criteria(data_root, tmp_path, capsys):
     scores = _judge(data_root, tmp_path)
     capsys.readouterr()
-    frozen = tmp_path / "cal4.json"
+    with pytest.raises(RuntimeError, match="registered"):
+        main(["e0", *_base(data_root, tmp_path, "e0draft"), "--scores", *scores])
+
+
+def test_e0_reports_field_and_stability(data_root, tmp_path, register_criteria, capsys):
+    register_criteria()
+    scores = _judge(data_root, tmp_path)
+    capsys.readouterr()
+    rc = main(
+        [
+            "e0",
+            *_base(data_root, tmp_path, "e0"),
+            "--scores",
+            *scores,
+            "--folds-out",
+            str(tmp_path / "folds.json"),
+        ]
+    )
+    assert rc in (0, 2, 3)
+    res = json.loads((tmp_path / "e0" / "results.json").read_text())
+    assert res["field_sanity"]["cells"]
+    assert set(res["stability"]) == {"alg", "hc"}
+    assert (tmp_path / "folds.json").exists()
+    md = (tmp_path / "e0" / "results.md").read_text()
+    assert "Pre-registered decision" in md
+
+
+def test_e0_decision_switches_the_primary_rule(data_root, tmp_path, register_criteria, capsys):
+    # Register a bound no corpus can meet, so the switch fires.
+    register_criteria(max_threshold_cv=-1.0)
+    scores = _judge(data_root, tmp_path)
+    capsys.readouterr()
+    rc = main(
+        [
+            "e0",
+            *_base(data_root, tmp_path, "e0sw"),
+            "--scores",
+            *scores,
+            "--folds-out",
+            str(tmp_path / "folds_sw.json"),
+        ]
+    )
+    assert rc in (2, 3)  # falsified: threshold unstable
+    decision = json.loads((tmp_path / "e0sw" / "e0_decision.json").read_text())
+    assert decision["threshold_unstable"]
+    assert decision["primary_rule"] == "relative_crossing"
+    assert decision["criterion_hash"]
+
+
+def test_e1_uses_the_primary_rule_e0_chose(data_root, tmp_path, register_criteria, capsys):
+    register_criteria(max_threshold_cv=-1.0)
+    scores = _judge(data_root, tmp_path)
+    capsys.readouterr()
     main(
         [
             "e0",
-            *_base(data_root, tmp_path, "e0c"),
-            "--paper1-scores",
-            str(paper1_scores),
+            *_base(data_root, tmp_path, "e0d"),
             "--scores",
             *scores,
-            "--frozen-out",
-            str(frozen),
-            "--held-aside-per-subset",
-            "2",
-            "--allow-draft-type-map",
+            "--folds-out",
+            str(tmp_path / "folds_d.json"),
+        ]
+    )
+    capsys.readouterr()
+    rc = main(
+        [
+            "e1",
+            *_base(data_root, tmp_path, "e1d"),
+            "--scores",
+            *scores,
+            "--folds",
+            str(tmp_path / "folds_d.json"),
+            "--decision",
+            str(tmp_path / "e0d" / "e0_decision.json"),
+        ]
+    )
+    assert rc == 0
+    res = json.loads((tmp_path / "e1d" / "results.json").read_text())
+    assert res["primary_rule"] == "relative_crossing"
+    assert res["normalized"] and res["n_folds"] > 0
+
+
+def test_e1_refuses_to_run_unnormalized(data_root, tmp_path, capsys):
+    scores = _judge(data_root, tmp_path)
+    capsys.readouterr()
+    with pytest.raises(SystemExit, match="statistics fit on the files being scored"):
+        main(["e1", *_base(data_root, tmp_path, "e1u"), "--scores", *scores])
+
+
+def test_e4_pooled_normalization_arm(data_root, tmp_path, register_criteria, capsys):
+    register_criteria()
+    scores = _judge(data_root, tmp_path)
+    capsys.readouterr()
+    main(
+        [
+            "e0",
+            *_base(data_root, tmp_path, "e0p"),
+            "--scores",
+            *scores,
+            "--folds-out",
+            str(tmp_path / "folds_p.json"),
         ]
     )
     capsys.readouterr()
@@ -396,13 +402,22 @@ def test_e4_pooled_calibration_arm(data_root, tmp_path, paper1_scores, capsys):
             *_base(data_root, tmp_path, "e3p"),
             "--scores",
             *scores,
-            "--calibration",
-            str(frozen),
-            "--pooled-calibration",
+            "--folds",
+            str(tmp_path / "folds_p.json"),
+            "--pooled-normalization",
             "--global-threshold",
         ]
     )
     assert rc == 0
     res = json.loads((tmp_path / "e3p" / "results.json").read_text())
-    assert res["pooled_calibration"] is True
+    assert res["typed_normalization"] is False
     assert res["typed_thresholds"] is False
+
+
+def test_judge_spec_files_start_as_drafts():
+    from masattr import specs
+
+    assert specs.e0_criteria()["status"] == "draft"
+    assert specs.judge_spec()["status"] == "draft"
+    with pytest.raises(RuntimeError, match="confirmed"):
+        specs.require_status("judge", specs.judge_spec(), "confirmed", "why")

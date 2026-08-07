@@ -15,9 +15,9 @@ steps that are coordination — to an LLM classifier, per Part C §2.
 
 Two constraints hold here:
 
-* The LLM classifier must be **family-disjoint from the judge**
-  (Part C §Validity): typing conditions the judge's evidence policy, so sharing
-  a family closes a loop.
+* The LLM classifier must be **family-disjoint from both judge families**
+  (Part C §Validity, v2.1 §3): typing conditions the judge's evidence policy, so
+  sharing a family closes a loop.
 * The splitter is itself gated. It is validated on HC, where plan/delegate is
   parsed and therefore known, before it is allowed to touch AG.
 """
@@ -145,14 +145,26 @@ class LLMSplitter(CoordinationSplitter):
         return SplitVerdict(m.group(1).lower(), raw=text or "")
 
 
-def build_splitter(spec: str, *, judge_model: str, device: str | None = None, seed: int = 0):
-    """``mock`` | ``hf:<model_id>``, checked disjoint from ``judge_model``."""
+def build_splitter(
+    spec: str,
+    *,
+    judge_model: str,
+    sensitivity_judge: str = "",
+    device: str | None = None,
+    seed: int = 0,
+):
+    """``mock`` | ``hf:<model_id>``, checked disjoint from every judge family."""
+    judges = [("judge", judge_model)] + (
+        [("sensitivity_judge", sensitivity_judge)] if sensitivity_judge else []
+    )
     if spec == "mock":
-        check_disjoint("type-classifier", spec, "judge", judge_model, strict=False)
+        for role, model in judges:
+            check_disjoint("type-classifier", spec, role, model, strict=False)
         return MockSplitter(seed=seed)
     from ..judge.client import build_client
 
-    check_disjoint("type-classifier", spec, "judge", judge_model)
+    for role, model in judges:
+        check_disjoint("type-classifier", spec, role, model)
     return LLMSplitter(build_client(spec, device=device, seed=seed), model_id=spec)
 
 
