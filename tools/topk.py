@@ -30,6 +30,8 @@ sys.path.insert(0, "src")
 
 from masattr.eval.ci import bootstrap_ci  # noqa: E402
 from masattr.judge.score import by_file, load_scores  # noqa: E402
+from masattr.normalize.apply import apply_folds  # noqa: E402
+from masattr.normalize.fit import load_folds  # noqa: E402
 from masattr.loaders.whowhen_ag import load as load_ag  # noqa: E402
 from masattr.loaders.whowhen_hc import load as load_hc  # noqa: E402
 from masattr.typing.normalize import collapse_orchestrator as collapse  # noqa: E402
@@ -37,15 +39,27 @@ from masattr.typing.normalize import collapse_orchestrator as collapse  # noqa: 
 KS = (1, 2, 3, 5)
 
 #: Every field that produced a row in the master table, plus the delta arms.
-FIELDS: tuple[tuple[str, str], ...] = (
-    ("B0 ptrue nogt", "main/scores/{s}__served_Qwen-Qwen3.6-35B-A3B_ptrue_typed_nogt.jsonl"),
-    ("B0 ptrue gt", "main/scores/{s}__served_Qwen-Qwen3.6-35B-A3B_ptrue_typed_gt.jsonl"),
-    ("B3 verbalized nogt", "base/b3/scores/{s}__served_Qwen-Qwen3.6-35B-A3B_verbalized_typed_nogt.jsonl"),
-    ("B3 binary nogt", "base/b3/scores/{s}__served_Qwen-Qwen3.6-35B-A3B_binary_typed_nogt.jsonl"),
-    ("B4 embed_divergence", "base/b4/scores/{s}__embed_divergence_nogt.jsonl"),
-    ("B4 nli_contradiction", "base/b4/scores/{s}__nli_contradiction_nogt.jsonl"),
-    ("D1 delta_resp (C5−C3)", "delta/fields/{s}__delta_resp_nogt.jsonl"),
-    ("D1 delta_own (C6−C3)", "delta/fields/{s}__delta_own_nogt.jsonl"),
+#: ``(label, score-file template, folds file)``. The folds matter: scores land
+#: on disk with ``p_norm`` unset, and ranking raw P(True) across step types
+#: compares numbers fit to different scales. Every row here is ranked on the
+#: same leave-one-file-out normalization the attribution rules use.
+FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("B0 ptrue nogt", "main/scores/{s}__served_Qwen-Qwen3.6-35B-A3B_ptrue_typed_nogt.jsonl",
+     "main/folds_nogt.json"),
+    ("B0 ptrue gt", "main/scores/{s}__served_Qwen-Qwen3.6-35B-A3B_ptrue_typed_gt.jsonl",
+     "main/folds_gt.json"),
+    ("B3 verbalized nogt", "base/b3/scores/{s}__served_Qwen-Qwen3.6-35B-A3B_verbalized_typed_nogt.jsonl",
+     "base/b3/folds_verbalized_nogt.json"),
+    ("B3 binary nogt", "base/b3/scores/{s}__served_Qwen-Qwen3.6-35B-A3B_binary_typed_nogt.jsonl",
+     "base/b3/folds_binary_nogt.json"),
+    ("B4 embed_divergence", "base/b4/scores/{s}__embed_divergence_nogt.jsonl",
+     "base/b4/folds_embed_divergence.json"),
+    ("B4 nli_contradiction", "base/b4/scores/{s}__nli_contradiction_nogt.jsonl",
+     "base/b4/folds_nli_contradiction.json"),
+    ("D1 delta_resp (C5−C3)", "delta/fields/{s}__delta_resp_nogt.jsonl",
+     "delta/folds_resp.json"),
+    ("D1 delta_own (C6−C3)", "delta/fields/{s}__delta_own_nogt.jsonl",
+     "delta/folds_own.json"),
 )
 
 
@@ -75,10 +89,14 @@ def _random_agent_hit(steps, gold_agent: str, k: int) -> float:
     return 1.0 - miss
 
 
-def evaluate(rows, meta) -> dict:
+def evaluate(rows, meta, folds) -> dict:
     """Per-file hit indicators at each k, plus the matched random controls."""
+    grouped = by_file(rows)
+    n_normed = apply_folds(grouped, folds)  # p_norm in place; ranking needs it
+    if n_normed == 0:
+        raise SystemExit("no rows normalized — folds do not cover these files")
     units: list[dict] = []
-    for key, scores in by_file(rows).items():
+    for key, scores in grouped.items():
         rec = meta.get(key)
         if rec is None or rec.n_steps < 2:
             continue
@@ -127,12 +145,16 @@ def main(argv: list[str]) -> int:
     def f(ci, p=3):
         return "—" if ci is None else f"{ci.point:.{p}f}"
 
-    for label, tmpl in FIELDS:
+    for label, tmpl, folds_rel in FIELDS:
+        folds_path = root / folds_rel
+        if not folds_path.exists():
+            continue
+        folds = load_folds(folds_path)
         for subset in ("alg", "hc"):
             path = root / tmpl.format(s=subset)
             if not path.exists():
                 continue
-            ev = evaluate(load_scores(path), meta)
+            ev = evaluate(load_scores(path), meta, folds)
             u = ev["units"]
             if not u:
                 continue
