@@ -1,11 +1,12 @@
 """Generate ``docs/RESULTS.md`` — the single consolidated results document.
 
 Everything the pilot produced, in one place, read from ``runs/``. The narrative
-is static; every number is computed. That split is deliberate: the previous
+is static; every number is computed. That split is deliberate: the earlier
 hand-written reports went stale the moment the readout scaffold changed, and a
 stale table that still looks plausible is worse than no table.
 
-Supersedes the per-experiment reports, which move to ``docs/archive/``.
+Names are spelled out rather than coded. The codebase keeps its identifiers;
+a reader of the results should not have to decode them.
 
 Usage: python tools/results_report.py <runs-root> <data-root> > docs/RESULTS.md
 """
@@ -22,6 +23,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from masattr.eval.ci import bootstrap_ci  # noqa: E402
 from masattr.eval.scorers import exact_agent, exact_step  # noqa: E402
+from masattr.judge.score import load_scores  # noqa: E402
+from masattr.normalize.fit import load_folds  # noqa: E402
 from masattr.typing.normalize import collapse_orchestrator as collapse  # noqa: E402
 from masattr.typing.normalize import is_orchestrator  # noqa: E402
 
@@ -31,16 +34,40 @@ import topk as TK  # noqa: E402
 PRIMARY = "changepoint_single"
 RULES4 = ("changepoint_single", "first_crossing", "argmin", "relative_crossing@2.0")
 
-#: (label, e1 dir template keyed by GT, note). One entry per master-table block.
+RULE = {
+    "changepoint_single": "two-regime split (registered)",
+    "first_crossing": "first step below threshold",
+    "argmin": "lowest-scoring step",
+    "relative_crossing@2.0": "relative drop (2x)",
+}
+
+SUBSET = {"alg": "algorithm-generated", "hc": "hand-crafted"}
+ANS = {"off": "hidden", "on": "shown", "nogt": "hidden", "gt": "shown"}
+
+#: One block per score field, in master-table order.
 BLOCKS = (
-    ("B0 P(True)/W0", {"off": "main/e1_nogt", "on": "main/e1_gt"}),
-    ("B3 verbalized", {"off": "base/b3/e1_verbalized_nogt", "on": "base/b3/e1_verbalized_gt"}),
-    ("B3 binary", {"off": "base/b3/e1_binary_nogt", "on": "base/b3/e1_binary_gt"}),
-    ("B4 embed_divergence", {"off": "base/b4/e1_embed_divergence_nogt"}),
-    ("B4 nli_contradiction", {"off": "base/b4/e1_nli_contradiction_nogt"}),
-    ("D1 delta_resp (C5−C3)", {"off": "delta/e1_resp"}),
-    ("D1 delta_own (C6−C3)", {"off": "delta/e1_own"}),
+    ("judge probability", {"off": "main/e1_nogt", "on": "main/e1_gt"}),
+    ("judge stated confidence",
+     {"off": "base/b3/e1_verbalized_nogt", "on": "base/b3/e1_verbalized_gt"}),
+    ("judge yes/no verdict",
+     {"off": "base/b3/e1_binary_nogt", "on": "base/b3/e1_binary_gt"}),
+    ("embedding divergence", {"off": "base/b4/e1_embed_divergence_nogt"}),
+    ("contradiction detector", {"off": "base/b4/e1_nli_contradiction_nogt"}),
+    ("shift when the response is added", {"off": "delta/e1_resp"}),
+    ("shift when response + next turn are added", {"off": "delta/e1_own"}),
 )
+
+#: Plain names for the recall@k fields, matched to topk.FIELDS by prefix.
+FIELD_NAME = {
+    "B0 ptrue nogt": "judge probability (answer hidden)",
+    "B0 ptrue gt": "judge probability (answer shown)",
+    "B3 verbalized nogt": "judge stated confidence",
+    "B3 binary nogt": "judge yes/no verdict",
+    "B4 embed_divergence": "embedding divergence",
+    "B4 nli_contradiction": "contradiction detector",
+    "D1 delta_resp (C5−C3)": "shift when the response is added",
+    "D1 delta_own (C6−C3)": "shift when response + next turn are added",
+}
 
 
 def load(p: Path):
@@ -54,26 +81,24 @@ def cell(sc):
     return f"{sc['agent_acc']:.3f}" + (f" [{ci['lo']:.3f},{ci['hi']:.3f}]" if ci else "")
 
 
-# --- 2. master table --------------------------------------------------------
-
-
 def master(root: Path) -> list[str]:
     out = [
-        "## 2. Master table",
+        "## 2. Main table",
         "",
-        "Exact scorer, slice `all`, file-level bootstrap CIs (2,000 resamples). "
-        "`fallback` is the primary rule's rate of falling back to argmin. Rows "
-        "without a `rule` produce a prediction directly and never touch the rule "
-        "layer.",
+        "How often each method names the faulty agent, and the faulty step, "
+        "exactly. Confidence intervals are bootstrapped over files (2,000 "
+        "resamples). *Rule gave up* is how often the registered rule found no "
+        "usable split and fell back to simply picking the lowest-scoring step. "
+        "Rows marked *none* make a prediction directly and never use a rule.",
         "",
-        "| row | GT | subset | rule | agent | step | fallback |",
+        "| score field | answer | logs | rule | names agent | names step | rule gave up |",
         "|---|---|---|---|---|---|---|",
     ]
     for label, dirs in BLOCKS:
         for gt, rel in sorted(dirs.items()):
             res = load(root / rel / "results.json")
             if not res:
-                out.append(f"| {label} | {gt} | — | *not run* | | | |")
+                out.append(f"| {label} | {ANS[gt]} | — | *not run* | | | |")
                 continue
             for lbl, cfg in sorted(res["configs"].items()):
                 subset = E1._subset(lbl)
@@ -84,11 +109,10 @@ def master(root: Path) -> list[str]:
                         continue
                     s = sc["step_ci"]
                     out.append(
-                        f"| {label} | {gt} | {subset} | {rule} | {cell(sc)} | "
-                        f"{sc['step_acc']:.3f} [{s['lo']:.3f},{s['hi']:.3f}] | "
+                        f"| {label} | {ANS[gt]} | {SUBSET[subset]} | {RULE[rule]} | "
+                        f"{cell(sc)} | {sc['step_acc']:.3f} [{s['lo']:.3f},{s['hi']:.3f}] | "
                         f"{fb.get('rate', float('nan')):.1%} |"
                     )
-    # B1 / B2 direct rows
     b1 = load(root / "base/b1/results.json")
     if b1:
         for key, variants in sorted(b1["rows"].items()):
@@ -98,7 +122,8 @@ def master(root: Path) -> list[str]:
                 continue
             s = sc.get("step_ci")
             out.append(
-                f"| B1 {name} | — | {subset} | *direct* | {cell(sc)} | "
+                f"| simple guess: {name.replace('_', ' ')} | — | {SUBSET[subset]} | *none* | "
+                f"{cell(sc)} | "
                 + (f"{sc['step_acc']:.3f} [{s['lo']:.3f},{s['hi']:.3f}]" if s else "—")
                 + " | — |"
             )
@@ -108,30 +133,28 @@ def master(root: Path) -> list[str]:
             sc = run["scores"].get("exact/all")
             s = sc and sc.get("step_ci")
             out.append(
-                f"| B2 {run['method']} | — | {run['subset']} | *direct* | {cell(sc)} | "
+                f"| published method: {run['method'].replace('_', ' ')} | — | "
+                f"{SUBSET[run['subset']]} | *none* | {cell(sc)} | "
                 + (f"{sc['step_acc']:.3f} [{s['lo']:.3f},{s['hi']:.3f}]" if sc else "—")
                 + " | — |"
             )
     return out
 
 
-# --- 3. position analysis ---------------------------------------------------
-
-
 def position(root: Path, meta: dict) -> list[str]:
-    """Why the agent column ranks methods differently from the step column."""
     out = [
         "",
-        "## 3. The agent column measures position, not attribution",
+        "## 3. Naming the right agent mostly measures position",
         "",
-        "Agent accuracy is defined as *the owner of the selected step*, so it "
-        "inherits whatever positional prior the corpus has. That prior is large, "
-        "and constant predictors collect it for free.",
+        "The agent is whoever owns the step a method picks. So this score "
+        "inherits any positional pattern in the corpus — and there is a big one, "
+        "which the simple guesses collect for free.",
         "",
-        "Agent accuracy if you always pick position k, against the gold agent's "
-        "mean share of all steps (the chance rate for a randomly placed pick):",
+        "How often a fixed position belongs to the faulty agent, against that "
+        "agent's average share of all steps (the rate a randomly placed pick "
+        "would get):",
         "",
-        "| subset | step 0 | step 1 | step 2 | last | gold agent's mean share of steps |",
+        "| logs | always step 0 | step 1 | step 2 | last step | faulty agent's share of steps |",
         "|---|---|---|---|---|---|",
     ]
     for subset in ("alg", "hc"):
@@ -140,8 +163,10 @@ def position(root: Path, meta: dict) -> list[str]:
         for k in (0, 1, 2):
             n = sum(1 for r in recs if k < r.n_steps)
             hit = sum(
-                1 for r in recs
-                if k < r.n_steps and collapse(r.steps[k].agent) == collapse(r.label_mistake_agent)
+                1
+                for r in recs
+                if k < r.n_steps
+                and collapse(r.steps[k].agent) == collapse(r.label_mistake_agent)
             )
             cells.append(f"{hit / max(n, 1):.3f}")
         last = sum(
@@ -155,16 +180,16 @@ def position(root: Path, meta: dict) -> list[str]:
             ]
         )
         out.append(
-            f"| {subset} | **{cells[0]}** | {cells[1]} | {cells[2]} | {last:.3f} | **{share:.3f}** |"
+            f"| {SUBSET[subset]} | **{cells[0]}** | {cells[1]} | {cells[2]} | "
+            f"{last:.3f} | **{share:.3f}** |"
         )
 
-    # where the primary rule actually places its picks
     out += [
         "",
-        "Where the primary rule places its picks, and the agent accuracy it earns "
-        "at each depth (GT off):",
+        "Where the registered rule actually picks, and how often it names the "
+        "right agent at each depth (reference answer hidden):",
         "",
-        "| subset | picks at step 0 | agent acc @0 | @1 | @2–4 | @5+ | overall |",
+        "| logs | picks step 0 | right agent at step 0 | at step 1 | steps 2–4 | step 5+ | overall |",
         "|---|---|---|---|---|---|---|",
     ]
     res = load(root / "main/e1_nogt/results.json")
@@ -189,38 +214,38 @@ def position(root: Path, meta: dict) -> list[str]:
                 for b in ("0", "1", "2-4", "5+")
             ]
             out.append(
-                f"| {subset} | {n0}/{n} ({n0 / n:.1%}) | " + " | ".join(cols) + f" | {ok / n:.3f} |"
+                f"| {SUBSET[subset]} | {n0}/{n} ({n0 / n:.1%}) | "
+                + " | ".join(cols)
+                + f" | {ok / n:.3f} |"
             )
     out += [
         "",
-        "On `alg` the gold agent owns 49.2% of first steps but only 33.2% of steps "
-        "overall, so `first_step` banks a positional bonus the score field never "
-        "tries to earn. The primary rule picks step 0 in 13.5% of files and its "
-        "agent accuracy falls monotonically with depth, landing at the mean "
-        "ownership share — i.e. the agent column, for this rule, is at the "
-        "random-step level. The step column is where the field's signal shows up.",
+        "On algorithm-generated logs the faulty agent owns about half of all "
+        "first steps but only a third of steps overall, so *always blame whoever "
+        "spoke first* banks a positional bonus the score field never tries to "
+        "earn. The registered rule picks step 0 in roughly one log in seven, and "
+        "its agent score falls steadily the deeper it picks — ending up at the "
+        "plain ownership share. On this column the rule performs at the level of "
+        "picking a step at random. Naming the right **step** is where the score "
+        "field's signal actually shows up.",
     ]
     return out
 
 
-# --- 4. recall@k ------------------------------------------------------------
-
-
-def recall_at_k(root: Path, meta: dict) -> list[str]:
+def guesses(root: Path, meta: dict) -> list[str]:
     out = [
         "",
-        "## 4. Relaxing top-1",
+        "## 4. Allowing more than one guess",
         "",
-        "Two different relaxations, reported side by side. **Tolerance** (|Δ|≤k) "
-        "allows a positional near-miss; **recall@k** allows the gold step to be "
-        "anywhere in the k most suspicious. Recall@k is ranked on the score field "
-        "(generalizing `argmin`) — the primary rule emits one step and has no "
-        "top-3 form. `random@3` is the matched control: three steps drawn "
-        "uniformly from the same trajectory.",
+        "Two different ways of being lenient. **Near-miss** accepts a pick that "
+        "lands within one or two steps of the true one. **Three guesses** accepts "
+        "the true step appearing anywhere among the three most suspicious steps. "
+        "The second is ranked on the score field itself — the registered rule "
+        "returns a single step and has no three-guess form.",
         "",
-        "### Tolerance curves, primary rule",
+        "### Near-miss",
         "",
-        "| GT | subset | exact | \\|Δ\\|≤1 | \\|Δ\\|≤2 |",
+        "| answer | logs | exact | within 1 step | within 2 steps |",
         "|---|---|---|---|---|",
     ]
     for gt in ("nogt", "gt"):
@@ -231,16 +256,20 @@ def recall_at_k(root: Path, meta: dict) -> list[str]:
             sc = cfg["scores"].get(PRIMARY, {})
             vals = [sc.get(f"{k}/all", {}).get("step_acc") for k in ("exact", "tol1", "tol2")]
             out.append(
-                f"| {gt} | {E1._subset(lbl)} | "
+                f"| {ANS[gt]} | {SUBSET[E1._subset(lbl)]} | "
                 + " | ".join("—" if v is None else f"{v:.3f}" for v in vals)
                 + " |"
             )
 
     out += [
         "",
-        "### Recall@k, step column",
+        "### Three guesses — is the true step among the 3 most suspicious?",
         "",
-        "| field | subset | n | @1 | @3 | random@3 | lift | @5 |",
+        "*Random 3* is the matched control: three steps drawn at random from the "
+        "same log. Short logs make that control strong, so the gain over it is "
+        "the number that matters.",
+        "",
+        "| score field | logs | files | top 1 | top 3 | random 3 | gain | top 5 |",
         "|---|---|---|---|---|---|---|---|",
     ]
     agent_rows = []
@@ -248,15 +277,12 @@ def recall_at_k(root: Path, meta: dict) -> list[str]:
         folds_path = root / folds_rel
         if not folds_path.exists():
             continue
-        from masattr.normalize.fit import load_folds
-
         folds = load_folds(folds_path)
+        name = FIELD_NAME.get(label, label)
         for subset in ("alg", "hc"):
             path = root / tmpl.format(s=subset)
             if not path.exists():
                 continue
-            from masattr.judge.score import load_scores
-
             ev = TK.evaluate(load_scores(path), meta, folds)
             u = ev["units"]
             if not u:
@@ -264,7 +290,7 @@ def recall_at_k(root: Path, meta: dict) -> list[str]:
             s1, s3, s5 = (TK._ci(u, f"step@{k}") for k in (1, 3, 5))
             r3 = st.fmean([x["rand_step@3"] for x in u])
             out.append(
-                f"| {label} | {subset} | {ev['n']} | {s1.point:.3f} | "
+                f"| {name} | {SUBSET[subset]} | {ev['n']} | {s1.point:.3f} | "
                 f"{s3.point:.3f} [{s3.lo:.3f},{s3.hi:.3f}] | {r3:.3f} | "
                 f"{s3.point - r3:+.3f} | {s5.point:.3f} |"
             )
@@ -272,25 +298,22 @@ def recall_at_k(root: Path, meta: dict) -> list[str]:
             ra3 = st.fmean([x["rand_agent@3"] for x in u])
             cov = st.fmean([x["cover@3"] for x in u])
             agent_rows.append(
-                f"| {label} | {subset} | {ev['n']} | {a1.point:.3f} | {a3.point:.3f} | "
-                f"{ra3:.3f} | {a3.point - ra3:+.3f} | {cov:.2f} |"
+                f"| {name} | {SUBSET[subset]} | {ev['n']} | {a1.point:.3f} | "
+                f"{a3.point:.3f} | {ra3:.3f} | {a3.point - ra3:+.3f} | {cov:.2f} |"
             )
     out += [
         "",
-        "### Recall@k, agent column",
+        "### Three guesses — naming the agent",
         "",
-        "`cover@3` is the mean number of distinct agents the three picks span. The "
-        "column is at ceiling when it approaches the number of agents in the file, "
-        "and then @3 stops discriminating.",
+        "*Agents covered* is how many distinct agents the three picks span. Once "
+        "that approaches the number of agents present, three guesses stops "
+        "distinguishing anything.",
         "",
-        "| field | subset | n | @1 | @3 | random@3 | lift | cover@3 |",
+        "| score field | logs | files | top 1 | top 3 | random 3 | gain | agents covered |",
         "|---|---|---|---|---|---|---|---|",
         *agent_rows,
     ]
     return out
-
-
-# --- 5. re-analyses ---------------------------------------------------------
 
 
 def base_rate(root: Path, meta: dict) -> list[str]:
@@ -298,17 +321,17 @@ def base_rate(root: Path, meta: dict) -> list[str]:
 
     out = [
         "",
-        "## 5. Re-analyses",
+        "## 5. Why hand-crafted logs flatter the simple guesses",
         "",
-        "### (i) Base-rate audit — `hc`, split by gold fault agent",
-        "",
-        "| predictor | fault | n | agent | step |",
+        "| simple guess | who was at fault | logs | names agent | names step |",
         "|---|---|---|---|---|",
     ]
     hc = [r for r in meta.values() if r.subset == "hc"]
     for name, fn in PREDICTORS.items():
         for grp in ("orchestrator", "worker"):
-            sel = [r for r in hc if is_orchestrator(r.label_mistake_agent) == (grp == "orchestrator")]
+            sel = [
+                r for r in hc if is_orchestrator(r.label_mistake_agent) == (grp == "orchestrator")
+            ]
             u = [
                 (
                     exact_agent(fn(r)[0], r.label_mistake_agent),
@@ -321,10 +344,15 @@ def base_rate(root: Path, meta: dict) -> list[str]:
             a = bootstrap_ci(u, lambda x: sum(i for i, _ in x) / len(x), n_boot=2000)
             s = bootstrap_ci(u, lambda x: sum(j for _, j in x) / len(x), n_boot=2000)
             out.append(
-                f"| {name} | {grp} | {len(u)} | {a.point:.3f} [{a.lo:.3f}, {a.hi:.3f}] | "
+                f"| {name.replace('_', ' ')} | {grp} | {len(u)} | "
+                f"{a.point:.3f} [{a.lo:.3f}, {a.hi:.3f}] | "
                 f"{s.point:.3f} [{s.lo:.3f}, {s.hi:.3f}] |"
             )
-    out += ["", "| fault | n | mean share of steps owned by the gold agent |", "|---|---|---|"]
+    out += [
+        "",
+        "| who was at fault | logs | that agent's mean share of steps |",
+        "|---|---|---|",
+    ]
     for grp in ("orchestrator", "worker"):
         sel = [r for r in hc if is_orchestrator(r.label_mistake_agent) == (grp == "orchestrator")]
         shares = [
@@ -335,58 +363,58 @@ def base_rate(root: Path, meta: dict) -> list[str]:
         out.append(f"| {grp} | {len(sel)} | {st.fmean(shares):.3f} |")
     out += [
         "",
-        "`majority_agent` is 1.000 on orchestrator-fault files and 0.000 on "
-        "worker-fault files, and the ownership share splits the same way. On `hc` "
-        "the orchestrator owns most steps of most trajectories, so picking the most "
-        "frequent agent reproduces gold exactly when the fault is the "
-        "orchestrator's and never otherwise.",
+        "*Blame the busiest agent* is right every time the orchestrator was at "
+        "fault and wrong every time a worker was, and the ownership shares split "
+        "the same way. On hand-crafted logs the orchestrator owns most steps of "
+        "most logs, so that guess reproduces the answer exactly when the "
+        "orchestrator erred and never otherwise. It is a property of the corpus, "
+        "not a skill.",
     ]
     return out
 
 
-def appendices(root: Path) -> list[str]:
+def appendix(root: Path) -> list[str]:
     out = [
         "",
-        "## 6. Appendix A — parse failures and fallback",
+        "## 6. Appendix — unreadable outputs and rule fallback",
         "",
-        "| field | subset | rows | parse_ok |",
+        "| score field | logs | rows | share readable |",
         "|---|---|---|---|",
     ]
-    from masattr.judge.score import load_scores
-
     for label, tmpl, _ in TK.FIELDS:
+        name = FIELD_NAME.get(label, label)
         for subset in ("alg", "hc"):
             p = root / tmpl.format(s=subset)
             if not p.exists():
                 continue
             rows = load_scores(p)
             ok = sum(1 for r in rows if r.parse_ok) / len(rows)
-            out.append(f"| {label} | {subset} | {len(rows):,} | {ok:.4f} |")
+            out.append(f"| {name} | {SUBSET[subset]} | {len(rows):,} | {ok:.4f} |")
     out += [
         "",
-        "> B4's rate is the step-0 fraction of each subset — exactly one "
-        "unscoreable row per file (no premise available), by construction rather "
-        "than a failure mode.",
+        "> The two non-judge fields cannot score a log's first step — there is "
+        "nothing before it to compare against — so their figure is exactly one "
+        "unscoreable row per log, by construction rather than a failure.",
         "",
-        "B2 uses their output format and their parser; unparseable predictions are "
-        "scored as misses against the full gold denominator, not dropped:",
+        "The published methods use their own output format and parser. Output we "
+        "could not parse counts as a miss against the full set of logs, not as a "
+        "dropped log:",
         "",
-        "| method | subset | n gold | unparsed | rate |",
+        "| published method | logs | logs total | unparseable | rate |",
         "|---|---|---|---|---|",
     ]
     b2 = load(root / "base/b2/results.json")
     if b2:
         for run in b2["runs"]:
             out.append(
-                f"| {run['method']} | {run['subset']} | {run['n_gold']} | "
-                f"{run['n_unparsed']} | {run['unparsed_rate']:.1%} |"
+                f"| {run['method'].replace('_', ' ')} | {SUBSET[run['subset']]} | "
+                f"{run['n_gold']} | {run['n_unparsed']} | {run['unparsed_rate']:.1%} |"
             )
-
     out += [
         "",
-        "Primary-rule fallback with reasons, reference row:",
+        "How often the registered rule gave up, and why:",
         "",
-        "| GT | subset | n | fallback | reasons |",
+        "| answer | logs | files | gave up | reasons |",
         "|---|---|---|---|---|",
     ]
     for gt in ("nogt", "gt"):
@@ -395,126 +423,132 @@ def appendices(root: Path) -> list[str]:
             continue
         for lbl, cfg in sorted(res["configs"].items()):
             fb = cfg.get("primary_fallback", {})
-            reasons = ", ".join(f"{k} {v}" for k, v in sorted((fb.get("reasons") or {}).items()))
+            reasons = ", ".join(
+                f"{k.replace('_', ' ')} {v}" for k, v in sorted((fb.get("reasons") or {}).items())
+            )
             out.append(
-                f"| {gt} | {E1._subset(lbl)} | {fb.get('n', '—')} | "
+                f"| {ANS[gt]} | {SUBSET[E1._subset(lbl)]} | {fb.get('n', '—')} | "
                 f"{fb.get('rate', 0):.1%} | {reasons} |"
             )
     return out
 
 
 def manifest(root: Path) -> list[str]:
-    out = [
+    m = load(root / "main/e1_nogt/manifest.json") or {}
+    h = m.get("spec_hashes", {})
+    return [
         "",
-        "## 7. Run manifest",
+        "## 7. How these numbers were produced",
         "",
-        "| run | commit | prompts hash | rows |",
-        "|---|---|---|---|",
+        "| item | value |",
+        "|---|---|",
+        "| judge | `Qwen/Qwen3.6-35B-A3B`, served locally |",
+        "| embedding model | `sentence-transformers/all-MiniLM-L6-v2` |",
+        "| contradiction model | `cross-encoder/nli-deberta-v3-large` |",
+        f"| prompt set hash | `{h.get('prompts', '—')}` |",
+        f"| rule registration hash | `{h.get('rule_directive', '—')}` |",
+        f"| step-type rules hash | `{h.get('type_rules', '—')}` |",
+        "| confidence intervals | bootstrap over files, 2,000 resamples, seed 0 |",
+        "| irregular logs | the 5 released logs that break the per-step checks are "
+        "kept, flagged, and reported both ways |",
+        "",
+        "The published-method rows use the original authors' code and prompts with "
+        "our judge substituted for theirs. That makes them a control for judge "
+        "capability — **not** a reproduction of their published figures, which "
+        "used a different model we had no quota for.",
+        "",
+        "Rebuild every table here with:",
+        "",
+        "```",
+        "python tools/results_report.py runs <data-root> > docs/RESULTS.md",
+        "```",
     ]
-    for rel in sorted(
-        p.parent for p in root.rglob("manifest.json") if "e1_" in str(p) or "judge" in str(p)
-    ):
-        m = load(rel / "manifest.json")
-        if not m:
-            continue
-        out.append(
-            f"| `{rel.relative_to(root)}` | `{(m.get('commit') or '')[:12]}` | "
-            f"`{m.get('spec_hashes', {}).get('prompts', '—')}` | "
-            f"{m.get('experiment', '—')} |"
-        )
-    out += [
-        "",
-        "Judge `Qwen/Qwen3.6-35B-A3B` (family qwen) for every judged row, served "
-        "over vLLM. B4 uses `sentence-transformers/all-MiniLM-L6-v2` and "
-        "`cross-encoder/nli-deberta-v3-large` and sends no prompt. Anomaly policy "
-        "`flag` throughout: the 5 released files that violate the per-step asserts "
-        "are kept, flagged, and dual-reported. Bootstrap CIs are file-level, "
-        "`n_boot=2000`, `seed=0`.",
-        "",
-        "> The B4 field-extraction manifest carries the pre-scaffold prompts hash. "
-        "That arm emits no prompts, so the hash records tree state rather than an "
-        "input to its numbers. Every arm that does send a prompt carries "
-        "`e8bc3b7bb8f22151`.",
-    ]
-    return out
 
 
 HEADER = """# Results
 
-> **Generated file.** Rebuild with
-> `python tools/results_report.py runs <data-root> > docs/RESULTS.md`.
-> Do not hand-edit — the per-experiment reports it replaces went stale when the
-> readout scaffold changed, and are archived under `docs/archive/`.
+> **Generated file** — rebuild with `tools/results_report.py` (command at the
+> end). Do not hand-edit: the earlier per-experiment write-ups went stale when
+> the prompt scaffold changed, and are kept only for history in `docs/archive/`.
 
-Every number here is read from `runs/`. Corpus: Who&When, **184 files /
-4,092 steps** — Algorithm-Generated (`alg`) 126 files / 1,099 steps,
-Hand-Crafted (`hc`) 58 files / 2,993 steps. Every judged row covers the full
-corpus; no row is a subsample.
+Every number here is read back from the stored run outputs. The corpus is
+Who&When: **184 logs, 4,092 steps** — 126 algorithm-generated logs (1,099
+steps) and 58 hand-crafted ones (2,993 steps). Every judged row covers the
+whole corpus; nothing here is a subsample.
 
-## 1. What the names mean
+## 1. What is being measured
 
-Three schemes overlap, which is worth stating once.
+Each failed multi-agent log has one recorded answer: which agent made the
+decisive mistake, and at which step. A method must name both. The two are
+scored separately because they behave very differently (see §3).
 
-**E0–E9 are pipeline stages** — verbs. `E0` fits leave-one-file-out
-normalization folds and reports field sanity; it is **sanity-only and gates
-nothing**, because the primary rule is fixed in advance by
-`specs/rule_directive.md`. `E1` applies the attribution rules to a normalized
-field and scores them. E2–E9 are ablation axes.
+Everything is built the same way. A **score field** assigns every step a number
+meaning roughly *how suspect is this step*. Those numbers are put on a common
+scale using statistics fit without the log being scored, so no log is judged
+against itself. Then a **rule** turns the sequence of numbers into a single
+accusation.
 
-**B0–B4 and D1 are rows** — nouns, one per score field:
+The score fields compared here:
 
-| row | field |
+| score field | what it is |
 |---|---|
-| B0 | P(True) readout, W0 evidence — the reference |
-| B1 | naive baselines (first/last step, majority agent, prior position, random) |
-| B2 | Who&When capability control — their three methods, our judge |
-| B3 | readout variants (verbalized, binary) |
-| B4 | semantic coherence (embedding divergence, NLI contradiction) |
-| D1 | lookahead-shift (δ) fields |
+| judge probability | the judge's probability that the step is correct, read from a single token |
+| judge stated confidence | the judge writes a confidence number instead |
+| judge yes/no verdict | the judge answers correct/incorrect |
+| embedding divergence | how far the step drifts from what came before — no judge involved |
+| contradiction detector | an off-the-shelf model asking whether the step contradicts earlier ones |
+| shift when the response is added | how much the judge's probability *moves* once the reply to that step is appended |
+| shift when response + next turn are added | the same, also appending that agent's own next turn |
 
-Every B/D row **is** an E0 run followed by an E1 run on its own score field.
-"E1" therefore names both a stage and, historically, a standalone report — that
-collision is why the old documents were confusing.
+Against them, two kinds of reference point: **simple guesses** that ignore
+content entirely (always blame the first step, the last step, the busiest
+agent, a random step), and the **published methods** from the Who&When paper
+run through our judge.
 
-**C3/C5/C6** map onto the `lookahead` axis: C3 = `none` (W0), C5 = `resp`
-(the realized response, cap 2), C6 = `own` (C5 **plus** the actor's next
-appearance — a superset, not a disjoint arm).
+The **answer** column says whether the judge was shown the reference answer
+while scoring. Both settings are reported because the benchmark defines both.
 """
 
-FOOTER = """
-## 8. Scope and limits
+FINDINGS = """
+## 8. What this adds up to
 
-- **Not run:** the gpt-4o published-regime arm of B2 (no quota) — so the B2 rows
-  are a capability control, *not* a reproduction of published Who&When numbers,
-  and should not be compared to them. E7 struck; E8 gated. The secondary judge
-  and the LLM type classifier are declared and family-verified but unused.
-- **δ (D1) is GT-off only**, staged behind a positive GT-off result that did not
-  arrive. Its `deleg` (cap-5) arm is implemented and unrun.
-- **`hc` n=55 in step-ranking analyses**, not 58: three released files carry a
-  `mistake_step` outside the trajectory and have no gold step to rank against.
-  They are counted, not silently dropped.
-- **Agent-column caveat.** §3 shows this column largely tracks a positional
-  prior. Rankings read off it should not be read as attribution skill.
+1. **On naming the agent, nothing beats the simple guesses.** No score field's
+   interval excludes the best simple guess on either corpus. §3 is why: that
+   column largely rewards picking an early or busy position, which the content-
+   free guesses do by construction.
+2. **On naming the step, the judge's probability does carry signal** — it beats
+   every simple guess and the random-step control on algorithm-generated logs.
+3. **One published method beats it on that column** — step-by-step, 0.294
+   against 0.190, with the same judge on the same logs. That gap is about
+   method, not about the metric, and it is the one result with no positional
+   explanation.
+4. **The registered rule rarely fires on the short logs** — it gives up and
+   falls back to the lowest-scoring step in about three quarters of
+   algorithm-generated logs, because the best split keeps landing on an edge of
+   a log averaging under nine steps.
+5. **The lookahead shift is a dead end.** It cannot rank the faulty step above
+   its neighbours anywhere (every interval spans chance), and on hand-crafted
+   logs it points the wrong way: seeing what came next makes the judge *more*
+   confident in the step that was actually wrong. Adding a step's consequence
+   was worth testing and did not work.
+6. **Three guesses helps on the step, modestly** — roughly +0.09 to +0.15 over
+   a matched random-three control on algorithm-generated logs. The advantage
+   sits at the very top of the ranking and thins out as the list grows. On the
+   agent, three guesses is at or below chance.
 
-## 9. Findings
+## 9. Limits
 
-1. **Nothing separates from the naive baselines on the agent column.** No
-   B0/B3/B4/D1 row's CI excludes the best B1 row on either subset. §3 explains
-   why: that column is a positional lottery, and constant predictors win it.
-2. **On the step column the score field does carry signal** — the reference row
-   beats every B1 heuristic and the random-step control on `alg`.
-3. **B2 `step_by_step` beats the primary rule on step accuracy** (0.294 vs 0.190
-   on `alg`), same judge, same corpus. That gap is method, not metric, and is
-   the one result with no positional excuse.
-4. **The primary rule mostly does not fire on `alg`** — ~75% argmin fallback,
-   driven by boundary hits on short (8.7-step mean) trajectories.
-5. **δ is a null.** The lookahead shift cannot rank the faulty step (all CIs
-   span chance) and inverts on `hc`, where the window rarely reaches the
-   consequence. C5/C6 stay dropped.
-6. **Top-3 helps on the step column, modestly.** Roughly +0.09 to +0.15 over a
-   matched random-3 control on `alg`; the field's advantage is concentrated at
-   the very top of the ranking and dilutes as k grows. The agent column at @3 is
-   at or below chance.
+- The published-method rows are a judge-capability control, not a reproduction;
+  they are not comparable to the figures in that paper.
+- The lookahead-shift rows were run only with the reference answer hidden. A
+  wider window (following a delegation to its resolution) is implemented and
+  unrun — that, not the shift idea itself, is the open question, since the
+  narrow window rarely reaches the consequence on hand-crafted logs.
+- Three hand-crafted logs record a mistake step outside the log's own length.
+  They are counted and reported, never silently dropped, which is why some
+  tables show 55 hand-crafted logs rather than 58.
+- Rankings taken from the agent column should not be read as attribution
+  skill. See §3.
 """
 
 
@@ -524,11 +558,11 @@ def main(argv: list[str]) -> int:
     lines = [HEADER]
     lines += master(root)
     lines += position(root, meta)
-    lines += recall_at_k(root, meta)
+    lines += guesses(root, meta)
     lines += base_rate(root, meta)
-    lines += appendices(root)
+    lines += appendix(root)
     lines += manifest(root)
-    lines.append(FOOTER)
+    lines.append(FINDINGS)
     print("\n".join(lines))
     return 0
 
