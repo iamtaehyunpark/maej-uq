@@ -93,6 +93,17 @@ REBUILD_WARN_AT = 8
 
 _NUM = re.compile(r"(\d+(?:\.\d+)?)\s*%?")
 
+#: Reasoning models wrap their scratchpad in <think>…</think>. The answer comes
+#: after it. Parsing the block itself is not a near miss — it silently reads
+#: numbers out of the model's reasoning ("evaluate step 1" → 1.00) and marks
+#: them as successfully parsed.
+_THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_THINK_OPEN = re.compile(r"<think>", re.IGNORECASE)
+
+#: Generation budget for the non-logit readouts. Large enough for a reasoning
+#: model to close its scratchpad and answer; the logit readout is unaffected.
+GENERATE_TOKENS = 512
+
 
 @dataclass(slots=True)
 class StepScore:
@@ -423,7 +434,7 @@ def score_record(
             p, trace = client.p_true(prompt)
             text = ""
         else:
-            text, trace = client.generate(prompt, max_new_tokens=12)
+            text, trace = client.generate(prompt, max_new_tokens=GENERATE_TOKENS)
             p, parse_ok = _parse_generated(text, kind)
 
         out.scores.append(
@@ -468,7 +479,10 @@ def _parse_generated(text: str, kind: str) -> tuple[float, bool]:
     dropping them would quietly flatter the readouts that are worst at
     following the format, which is precisely what E2 is measuring.
     """
-    t = (text or "").strip()
+    t = _THINK.sub("", text or "").strip()
+    if _THINK_OPEN.search(t):
+        # Still inside an unclosed scratchpad: the answer was never reached.
+        return 0.5, False
     if kind == "binary":
         low = t.lower()
         if low.startswith("true") or low.startswith("yes"):

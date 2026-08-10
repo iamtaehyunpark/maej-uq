@@ -370,3 +370,23 @@ def test_resume_off_starts_clean(tmp_path):
     score_corpus([_rec()], MockClient(), out_path=out)
     score_corpus([_rec()], MockClient(), out_path=out, resume=False)
     assert len(load_scores(out)) == _rec().n_steps
+
+
+def test_reasoning_scratchpad_is_stripped_before_parsing():
+    from masattr.judge.score import _parse_generated
+
+    # The answer follows a closed <think> block; startswith would miss it.
+    assert _parse_generated("\n\n<think>\n\n</think>\n\nFalse", "binary") == (0.0, True)
+    assert _parse_generated("<think>musing</think> True", "binary") == (1.0, True)
+    assert _parse_generated("<think>x</think>\n0.83", "verbalized") == (0.83, True)
+
+
+def test_unclosed_scratchpad_is_a_parse_failure_not_a_number():
+    from masattr.judge.score import _parse_generated
+
+    # Truncated mid-reasoning: the regex would otherwise read the step index out
+    # of "evaluate step 1" and report it as a confidence of 1.00.
+    p, ok = _parse_generated("\n\n<think>\nThe user wants me to evaluate step 1", "verbalized")
+    assert (p, ok) == (0.5, False)
+    p, ok = _parse_generated("<think>still thinking", "binary")
+    assert (p, ok) == (0.5, False)
