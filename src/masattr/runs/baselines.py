@@ -126,20 +126,41 @@ def main(argv=None) -> int:
                 receipt.parent.mkdir(parents=True, exist_ok=True)
                 if not args.reuse_output:
                     run_repo_subprocess(
-                    args.repo_path,
-                    method=method,
-                    model=args.repo_model,
-                    directory_path=directory,
-                    is_handcrafted=(subset == "hc"),
-                    api_key=args.api_key or "not-needed",
-                    device=args.device,
-                    snapshot_receipt=receipt,
-                    base_url=args.served_base_url,
-                    model_rewrite=args.served_model,
+                        args.repo_path,
+                        method=method,
+                        model=args.repo_model,
+                        directory_path=directory,
+                        is_handcrafted=(subset == "hc"),
+                        api_key=args.api_key or "not-needed",
+                        device=args.device,
+                        snapshot_receipt=receipt,
+                        base_url=args.served_base_url,
+                        model_rewrite=args.served_model,
                         no_think=args.no_think,
                         python_exe=args.repo_python,
                         max_tokens=args.repo_max_tokens,
                     )
+                out_file = output_path(
+                    args.repo_path,
+                    method=method,
+                    model=args.repo_model,
+                    is_handcrafted=(subset == "hc"),
+                )
+                parsed = parse_repo_output(
+                    out_file.read_text(encoding="utf-8"), ids, subset
+                )
+                if not parsed:
+                    raise SystemExit(
+                        f"parsed no predictions from {out_file}; their output format "
+                        "may have changed — check it before trusting any row"
+                    )
+                # Every gold file gets a row. A prediction their output does not
+                # carry — unparseable, or the model never answered — is a miss,
+                # not an excluded file: dropping those shrinks the denominator
+                # by exactly the cases the method failed on.
+                preds = {k: parsed.get(k, (None, None)) for k in gold}
+                n_unparsed = sum(1 for k in gold if k not in parsed)
+
                 snapshots = (
                     sorted(set(receipt.read_text().split())) if receipt.exists() else []
                 )
@@ -152,26 +173,6 @@ def main(argv=None) -> int:
                     manifest.note(
                         f"{method}/{subset}: API returned model snapshot(s) "
                         + ", ".join(snapshots)
-                    )
-                out_file = output_path(
-                    args.repo_path,
-                    method=method,
-                    model=args.repo_model,
-                    is_handcrafted=(subset == "hc"),
-                )
-                parsed = parse_repo_output(
-                    out_file.read_text(encoding="utf-8"), ids, subset
-                )
-                # Every gold file gets a row. A prediction their output does not
-                # carry — unparseable, or the model never answered — is a miss,
-                # not an excluded file: dropping those shrinks the denominator
-                # by exactly the cases the method failed on.
-                preds = {k: parsed.get(k, (None, None)) for k in gold}
-                n_unparsed = sum(1 for k in gold if k not in parsed)
-                if not parsed:
-                    raise SystemExit(
-                        f"parsed no predictions from {out_file}; their output format "
-                        "may have changed — check it before trusting any row"
                     )
                 scored = score_all(
                     {k: _Pred(v) for k, v in preds.items()},
