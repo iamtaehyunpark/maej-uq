@@ -77,6 +77,8 @@ def final_scatter(meta, runs: Path) -> list[str]:
         rec = meta.get(r.key)
         if not rec or rec.n_steps < 2:
             continue
+        if not 0 <= rec.label_mistake_step < rec.n_steps:
+            continue
         pos = rec.label_mistake_step / (rec.n_steps - 1)
         buckets[min(int(pos * 5), 4)].append(r.p_raw)
     out += ["| gold position | n | mean final-step score |", "|---|---|---|"]
@@ -97,17 +99,26 @@ def type_composition(meta, runs: Path) -> list[str]:
             subset = [p for p in label.split(" · ") if p.startswith("subset=")][0].split("=")[1]
             preds = cfg["predictions"].get("changepoint_single", {})
             pred_t, gold_t = Counter(), Counter()
+            n_anom = 0
             for key, p in preds.items():
                 rec = meta.get(key)
                 if not rec:
+                    continue
+                # The release's out-of-range mistake_step files have no gold step
+                # to type. They are counted, not silently skipped.
+                if not 0 <= rec.label_mistake_step < rec.n_steps:
+                    n_anom += 1
                     continue
                 gold_t[rec.steps[rec.label_mistake_step].type_norm] += 1
                 if p.get("pred_step") is not None and 0 <= p["pred_step"] < rec.n_steps:
                     pred_t[rec.steps[p["pred_step"]].type_norm] += 1
             types = sorted(set(pred_t) | set(gold_t))
-            out.append(f"**GT {gt}, {subset}** — " + ", ".join(
-                f"{t}: pred {pred_t[t]} / gold {gold_t[t]}" for t in types
-            ))
+            note = f" (+{n_anom} files with an out-of-range gold step)" if n_anom else ""
+            out.append(
+                f"**GT {gt}, {subset}** — "
+                + ", ".join(f"{t}: pred {pred_t[t]} / gold {gold_t[t]}" for t in types)
+                + note
+            )
     return out
 
 
