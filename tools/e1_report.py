@@ -9,7 +9,11 @@ it.
 E0 is sanity-only and gates nothing; the primary rule is fixed by
 ``specs/rule_directive.md``. E1 applies the rules and scores them.
 
-Usage: python tools/e1_report.py <runs-root> <data-root> [> docs/E1_report.md]
+Retained as a component of ``results_report.py`` (which imports its corpus
+loader and helpers) and as a standalone detail view. The document it used to
+write is archived; ``docs/RESULTS.md`` is the current report.
+
+Usage: python tools/e1_report.py <runs-root> <data-root>
 """
 
 from __future__ import annotations
@@ -384,8 +388,7 @@ def main(argv: list[str]) -> int:
         "",
         "| doc | scope |",
         "|---|---|",
-        "| `pilot_baseline_report.md` | the B0–B4 suite; this row is its B0 |",
-        "| `delta_field_report.md` | D1, the lookahead-shift (δ) fields |",
+        "| `docs/RESULTS.md` | the current consolidated report |",
         "| `runs/base/MASTER.md` | all rows, four rules, one table |",
         "| `runs/base/TOPK.md` | recall@k over the score ranking |",
         "",
