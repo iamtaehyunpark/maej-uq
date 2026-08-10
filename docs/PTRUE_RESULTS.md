@@ -122,6 +122,67 @@ interchangeable and should not be quoted as though they were.
 
 ---
 
+## Choosing the agent directly
+
+The rule table's `agent_first` selects the agent whose *best* step is still the
+worst — a minimax criterion — then picks a step inside that agent. That is one
+aggregation among many and had never been compared against the alternatives.
+Each selector below scores every agent from its own steps' P(True), takes the
+worst-scoring agent, and reports that agent's lowest-scoring step. Raw P(True),
+no normalization.
+
+**Algorithm-generated**
+
+| agent selector | agent, hidden | step, hidden | agent, shown | step, shown |
+|---|---|---|---|---|
+| worst single step (min) | 0.452 [0.365, 0.540] | **0.262** [0.190, 0.341] | 0.421 [0.325, 0.508] | 0.206 [0.135, 0.278] |
+| best step still worst (max) — *current* | 0.294 [0.222, 0.373] | 0.151 [0.095, 0.214] | 0.325 [0.246, 0.413] | 0.198 [0.135, 0.270] |
+| mean | 0.405 [0.325, 0.492] | 0.222 [0.151, 0.294] | 0.381 [0.302, 0.468] | 0.214 [0.143, 0.286] |
+| median | 0.429 [0.341, 0.516] | 0.238 [0.167, 0.317] | 0.389 [0.310, 0.476] | 0.222 [0.151, 0.302] |
+| **mean of its 2 worst steps** | **0.484** [0.397, 0.571] | 0.254 [0.183, 0.333] | **0.452** [0.365, 0.540] | **0.246** [0.175, 0.325] |
+| fraction of steps below 0.5 | 0.397 [0.317, 0.484] | 0.214 [0.143, 0.286] | 0.373 [0.286, 0.452] | 0.206 [0.143, 0.278] |
+| count of steps below 0.5 | 0.452 [0.365, 0.540] | 0.183 [0.119, 0.254] | 0.437 [0.357, 0.524] | 0.183 [0.119, 0.254] |
+| **total suspicion, sum(1−p)** | **0.484** [0.397, 0.571] | 0.198 [0.135, 0.270] | 0.437 [0.349, 0.524] | 0.175 [0.111, 0.246] |
+
+**Hand-crafted**
+
+| agent selector | agent, hidden | step, hidden | agent, shown | step, shown |
+|---|---|---|---|---|
+| **worst single step (min)** | **0.691** [0.564, 0.818] | **0.164** [0.073, 0.273] | 0.618 [0.491, 0.745] | 0.164 [0.073, 0.273] |
+| best step still worst (max) — *current* | 0.455 [0.327, 0.582] | 0.127 [0.055, 0.218] | 0.473 [0.345, 0.600] | 0.164 [0.073, 0.255] |
+| mean | 0.509 [0.382, 0.636] | 0.145 [0.055, 0.236] | 0.527 [0.400, 0.655] | 0.145 [0.055, 0.236] |
+| median | 0.545 [0.418, 0.673] | 0.127 [0.055, 0.218] | 0.509 [0.382, 0.636] | 0.145 [0.055, 0.236] |
+| mean of its 2 worst steps | 0.618 [0.491, 0.745] | 0.145 [0.055, 0.236] | **0.636** [0.509, 0.764] | 0.164 [0.073, 0.273] |
+| fraction of steps below 0.5 | 0.473 [0.345, 0.600] | 0.109 [0.036, 0.200] | 0.491 [0.364, 0.618] | 0.127 [0.055, 0.218] |
+| count of steps below 0.5 | 0.382 [0.255, 0.509] | 0.109 [0.036, 0.200] | 0.345 [0.218, 0.473] | 0.109 [0.036, 0.200] |
+| total suspicion, sum(1−p) | 0.382 [0.255, 0.509] | 0.109 [0.036, 0.200] | 0.364 [0.236, 0.491] | 0.109 [0.036, 0.200] |
+
+**The current minimax selector is the worst of the eight on algorithm-generated
+logs** — 0.294 agent accuracy against 0.484 for the two best, and last or
+near-last on hand-crafted too. Requiring an agent's *best* step to be bad
+selects whoever contributed fewest steps, since one confident step is enough to
+clear them.
+
+**No single selector wins both corpora.** On algorithm-generated it is
+*mean of the 2 worst steps* and *total suspicion* (0.484 each); on hand-crafted
+it is *worst single step* (0.691), where those two drop to 0.618 and 0.382.
+The two corpora reward opposite things: short logs give each agent few steps, so
+aggregating over two of them is informative, while long logs give the busiest
+agent so many steps that any sum-like statistic just elects whoever talked most —
+which is why *total suspicion* collapses from best to worst across the two.
+
+**Mean of the 2 worst steps is the only selector that is near-best everywhere**
+and is the one to prefer if a single rule has to be chosen: 0.484 / 0.452 on
+algorithm-generated and 0.618 / 0.636 on hand-crafted, while also giving the
+best step accuracy in the answer-shown setting (0.246).
+
+**These are eight variants scored on the same data**, so the winners are picked
+post hoc and their margins are inside the intervals — 0.484 against 0.452 for
+*worst single step* is about four logs. Treat this as a diagnostic of what the
+selector is sensitive to, not as a registered result.
+
+---
+
 ## Reading the tables
 
 **On algorithm-generated logs, P(True) locates the step better than anything
