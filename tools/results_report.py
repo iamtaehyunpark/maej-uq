@@ -57,28 +57,126 @@ ANS = {"off": "hidden", "on": "shown", "nogt": "hidden", "gt": "shown"}
 
 #: One block per score field, in master-table order.
 BLOCKS = (
-    ("judge probability", {"off": "main/e1_nogt", "on": "main/e1_gt"}),
-    ("judge stated confidence",
+    ("P(True)", {"off": "main/e1_nogt", "on": "main/e1_gt"}),
+    ("verbalized confidence",
      {"off": "base/b3/e1_verbalized_nogt", "on": "base/b3/e1_verbalized_gt"}),
-    ("judge yes/no verdict",
+    ("binary verdict",
      {"off": "base/b3/e1_binary_nogt", "on": "base/b3/e1_binary_gt"}),
     ("embedding divergence", {"off": "base/b4/e1_embed_divergence_nogt"}),
-    ("contradiction detector", {"off": "base/b4/e1_nli_contradiction_nogt"}),
-    ("shift when the response is added", {"off": "delta/e1_resp"}),
-    ("shift when response + next turn are added", {"off": "delta/e1_own"}),
+    ("NLI contradiction", {"off": "base/b4/e1_nli_contradiction_nogt"}),
+    ("P(True) shift, +response", {"off": "delta/e1_resp"}),
+    ("P(True) shift, +response +next turn", {"off": "delta/e1_own"}),
 )
 
 #: Plain names for the recall@k fields, matched to topk.FIELDS by prefix.
 FIELD_NAME = {
-    "B0 ptrue nogt": "judge probability (answer hidden)",
-    "B0 ptrue gt": "judge probability (answer shown)",
-    "B3 verbalized nogt": "judge stated confidence",
-    "B3 binary nogt": "judge yes/no verdict",
+    "B0 ptrue nogt": "P(True), answer hidden",
+    "B0 ptrue gt": "P(True), answer shown",
+    "B3 verbalized nogt": "verbalized confidence",
+    "B3 binary nogt": "binary verdict",
     "B4 embed_divergence": "embedding divergence",
-    "B4 nli_contradiction": "contradiction detector",
-    "D1 delta_resp (C5−C3)": "shift when the response is added",
-    "D1 delta_own (C6−C3)": "shift when response + next turn are added",
+    "B4 nli_contradiction": "NLI contradiction",
+    "D1 delta_resp (C5−C3)": "P(True) shift, +response",
+    "D1 delta_own (C6−C3)": "P(True) shift, +response +next turn",
 }
+
+
+def _auroc(pos, neg):
+    if not pos or not neg:
+        return None
+    w = sum(1.0 if a > b else 0.5 if a == b else 0.0 for a in pos for b in neg)
+    return w / (len(pos) * len(neg))
+
+
+def discrimination(root: Path, meta: dict) -> list[str]:
+    """The headline: can the field rank the faulty step above its own trajectory?"""
+    from masattr.judge.score import by_file
+
+    out = [
+        "## 2. Does the score field find the labelled step?",
+        "",
+        "The direct test, with no rule and no threshold in the way: within each "
+        "trajectory, rank every step by the score and ask whether the step "
+        "Who&When labels as the decisive mistake ranks above the others. "
+        "Reported as AUROC per trajectory, averaged over trajectories. **0.5 is "
+        "chance.** Intervals are bootstrapped over files.",
+        "",
+        "| score field | logs | files | AUROC | mean score at labelled step | elsewhere |",
+        "|---|---|---|---|---|---|",
+    ]
+    for label, tmpl, folds_rel in TK.FIELDS:
+        name = FIELD_NAME.get(label, label)
+        folds_path = root / folds_rel
+        if not folds_path.exists():
+            continue
+        folds = load_folds(folds_path)
+        for subset in ("alg", "hc"):
+            path = root / tmpl.format(s=subset)
+            if not path.exists():
+                continue
+            g = by_file(load_scores(path))
+            per_file, pg, po = [], [], []
+            for key, sc in g.items():
+                rec = meta.get(key)
+                if rec is None or not (0 <= rec.label_mistake_step < len(sc)):
+                    continue
+                gi = rec.label_mistake_step
+                a = _auroc(
+                    [-x.p_raw for x in sc if x.step_idx == gi],
+                    [-x.p_raw for x in sc if x.step_idx != gi],
+                )
+                if a is not None:
+                    per_file.append(a)
+                pg += [x.p_raw for x in sc if x.step_idx == gi]
+                po += [x.p_raw for x in sc if x.step_idx != gi]
+            if not per_file:
+                continue
+            ci = bootstrap_ci(per_file, lambda x: st.fmean(x), n_boot=2000)
+            star = " **" if ci.lo > 0.5 else " "
+            out.append(
+                f"| {name} | {SUBSET[subset]} | {len(per_file)} |{star}{ci.point:.3f} "
+                f"[{ci.lo:.3f}, {ci.hi:.3f}]{star.strip()} | {st.fmean(pg):.3f} | "
+                f"{st.fmean(po):.3f} |"
+            )
+    out += [
+        "",
+        "**Bold** marks fields whose interval excludes chance.",
+        "",
+        "P(True) is above chance on both corpora and in both answer settings, and "
+        "its mean sits lower on the labelled step than elsewhere — the judge is "
+        "measurably less confident about the step the benchmark blames. The "
+        "effect is real and small: an AUROC near 0.58.",
+        "",
+        "Everything downstream follows from that number. On a trajectory "
+        "averaging under nine steps, an AUROC of 0.58 turns into roughly 19% "
+        "exact-step accuracy once you force a single pick, which is what §3 "
+        "reports. The accuracy tables are a lossy projection of this table, not "
+        "an independent result.",
+    ]
+
+    res = load(root / "main/e0_nogt/results.json")
+    if res:
+        out += [
+            "",
+            "### Broken out by step type (P(True), answer hidden)",
+            "",
+            "Same question, pooled within each step type instead of within each "
+            "trajectory, and scored against the labelled step versus the steps "
+            "*before* it. Cells under 20 steps are too small to read.",
+            "",
+            "| step type | steps | AUROC |",
+            "|---|---|---|",
+        ]
+        for k, v in sorted(res["field_sanity"]["cells"].items()):
+            au = v.get("auroc_vs_derived_labels")
+            if au is None:
+                continue
+            note = " *(too small)*" if v.get("undersized") else ""
+            out.append(f"| {k} | {v['n']:,} | {au:.3f}{note} |")
+    return out
+
+
+
 
 
 def load(p: Path):
@@ -94,7 +192,7 @@ def cell(sc):
 
 def master(root: Path) -> list[str]:
     out = [
-        "## 2. Main table",
+        "## 3. What that becomes after forcing one pick",
         "",
         "How often each method names the faulty agent, and the faulty step, "
         "exactly. Confidence intervals are bootstrapped over files (2,000 "
@@ -197,7 +295,7 @@ def all_rules(root: Path) -> list[str]:
 def position(root: Path, meta: dict) -> list[str]:
     out = [
         "",
-        "## 3. Naming the right agent mostly measures position",
+        "## 4. Naming the right agent mostly measures position",
         "",
         "The agent is whoever owns the step a method picks. So this score "
         "inherits any positional pattern in the corpus — and there is a big one, "
@@ -288,7 +386,7 @@ def position(root: Path, meta: dict) -> list[str]:
 def guesses(root: Path, meta: dict) -> list[str]:
     out = [
         "",
-        "## 4. Allowing more than one guess",
+        "## 5. Allowing more than one guess",
         "",
         "Two different ways of being lenient. **Near-miss** accepts a pick that "
         "lands within one or two steps of the true one. **Three guesses** accepts "
@@ -374,7 +472,7 @@ def base_rate(root: Path, meta: dict) -> list[str]:
 
     out = [
         "",
-        "## 5. Why hand-crafted logs flatter the simple guesses",
+        "## 6. Why hand-crafted logs flatter the simple guesses",
         "",
         "| simple guess | who was at fault | logs | names agent | names step |",
         "|---|---|---|---|---|",
@@ -429,7 +527,7 @@ def base_rate(root: Path, meta: dict) -> list[str]:
 def appendix(root: Path) -> list[str]:
     out = [
         "",
-        "## 6. Appendix — unreadable outputs and rule fallback",
+        "## 7. Appendix — unreadable outputs and rule fallback",
         "",
         "| score field | logs | rows | share readable |",
         "|---|---|---|---|",
@@ -491,7 +589,7 @@ def manifest(root: Path) -> list[str]:
     h = m.get("spec_hashes", {})
     return [
         "",
-        "## 7. How these numbers were produced",
+        "## 8. How these numbers were produced",
         "",
         "| item | value |",
         "|---|---|",
@@ -533,7 +631,7 @@ whole corpus; nothing here is a subsample.
 
 Each failed multi-agent log has one recorded answer: which agent made the
 decisive mistake, and at which step. A method must name both. The two are
-scored separately because they behave very differently (see §3).
+scored separately because they behave very differently (see §4).
 
 Everything is built the same way. A **score field** assigns every step a number
 meaning roughly *how suspect is this step*. Those numbers are put on a common
@@ -563,31 +661,29 @@ while scoring. Both settings are reported because the benchmark defines both.
 """
 
 FINDINGS = """
-## 8. What this adds up to
+## 9. What this adds up to
 
-1. **On naming the agent, nothing beats the simple guesses.** No score field's
-   interval excludes the best simple guess on either corpus. §3 is why: that
-   column largely rewards picking an early or busy position, which the content-
-   free guesses do by construction.
-2. **On naming the step, the judge's probability does carry signal** — it beats
-   every simple guess and the random-step control on algorithm-generated logs.
-3. **One published method beats it on that column** — step-by-step, 0.294
-   against 0.190, with the same judge on the same logs. That gap is about
-   method, not about the metric, and it is the one result with no positional
-   explanation.
-4. **The registered rule rarely fires on the short logs** — it gives up and
-   falls back to the lowest-scoring step in about three quarters of
-   algorithm-generated logs, because the best split keeps landing on an edge of
-   a log averaging under nine steps.
-5. **The lookahead shift is a dead end.** It cannot rank the faulty step above
-   its neighbours anywhere (every interval spans chance), and on hand-crafted
-   logs it points the wrong way: seeing what came next makes the judge *more*
-   confident in the step that was actually wrong. Adding a step's consequence
-   was worth testing and did not work.
-6. **Three guesses helps on the step, modestly** — roughly +0.08 to +0.15 over
-   a matched random-three control on algorithm-generated logs. The advantage
-   sits at the very top of the ranking and thins out as the list grows. On the
-   agent, three guesses is at or below chance.
+1. **External P(True) does find the labelled step, weakly.** Within-trajectory
+   AUROC ≈ 0.57–0.62, interval above chance on both corpora and in both answer
+   settings, with the judge measurably less confident on the labelled step than
+   on the rest of the trajectory. This is the result; everything else is a
+   consequence of it.
+2. **A 0.58 AUROC does not survive being forced into one pick.** On logs
+   averaging under nine steps it becomes roughly 19% exact-step accuracy. The
+   gap between §2 and §3 is arithmetic, not a second finding, and no rule in §3
+   recovers it.
+3. **Naming the agent tests something else.** That column largely rewards
+   picking an early or busy position, which the content-free guesses do by
+   construction — see §4. Rankings taken from it are not attribution skill.
+4. **One published method still beats the rule layer on the step column** —
+   step-by-step, 0.294 against 0.190, same judge, same logs. That gap is about
+   method and has no positional explanation.
+5. **The registered rule rarely fires on short logs** — it falls back to the
+   lowest-scoring step in about three quarters of algorithm-generated logs,
+   because the best split keeps landing on a trajectory edge.
+6. **The lookahead shift is a dead end.** It cannot rank the labelled step
+   anywhere (every interval spans chance) and points the wrong way on
+   hand-crafted logs.
 
 ## 9. Limits
 
@@ -609,6 +705,7 @@ def main(argv: list[str]) -> int:
     root = Path(argv[1] if len(argv) > 1 else "runs")
     meta = E1.corpus(Path(argv[2] if len(argv) > 2 else "data"))
     lines = [HEADER]
+    lines += discrimination(root, meta)
     lines += master(root)
     lines += all_rules(root)
     lines += position(root, meta)
