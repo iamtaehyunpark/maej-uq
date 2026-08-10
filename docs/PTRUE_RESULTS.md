@@ -73,7 +73,6 @@ and the readout are no longer confounded.
 | **first step below threshold** | **0.325** | 0.460 | 0.103 | 0.293 |
 | lowest-scoring step | 0.246 | 0.437 | 0.121 | 0.414 |
 | two-regime split, unscaled | 0.111 | 0.286 | 0.086 | 0.328 |
-| first step of the worst-scoring agent | 0.183 | 0.286 | 0.172 | 0.328 |
 | relative drop 1.5x | 0.262 | 0.437 | 0.103 | 0.414 |
 | relative drop 2x | 0.246 | 0.437 | 0.121 | 0.397 |
 | relative drop 2.5x | 0.246 | 0.437 | 0.121 | 0.414 |
@@ -86,10 +85,15 @@ and the readout are no longer confounded.
 | **first step below threshold** | **0.325** | 0.460 | **0.224** | **0.569** |
 | lowest-scoring step | 0.230 | 0.437 | 0.121 | 0.431 |
 | two-regime split, unscaled | 0.127 | 0.278 | 0.086 | 0.276 |
-| first step of the worst-scoring agent | 0.246 | 0.317 | 0.172 | 0.379 |
 | relative drop 1.5x | 0.238 | 0.429 | 0.086 | 0.397 |
 | relative drop 2x | 0.230 | 0.437 | 0.103 | 0.431 |
 | relative drop 2.5x | 0.230 | 0.437 | 0.121 | 0.431 |
+
+`agent_first` — first step of the worst-scoring agent — is absent from these
+tables. It is withdrawn from the reported rule set: it lost to another rule in
+every cell but one (hand-crafted step accuracy, answer hidden: 0.172 against
+0.121, roughly three logs on the noisiest subset), and the selector sweep below
+shows why. It remains implemented and callable.
 
 Rate at which the registered rule found no usable split and fell back to the
 lowest-scoring step: 65.9% / 10.3% (answer hidden, alg / hand-crafted) and
@@ -136,7 +140,7 @@ no normalization.
 | agent selector | agent, hidden | step, hidden | agent, shown | step, shown |
 |---|---|---|---|---|
 | worst single step (min) | 0.452 [0.365, 0.540] | **0.262** [0.190, 0.341] | 0.421 [0.325, 0.508] | 0.206 [0.135, 0.278] |
-| best step still worst (max) — *current* | 0.294 [0.222, 0.373] | 0.151 [0.095, 0.214] | 0.325 [0.246, 0.413] | 0.198 [0.135, 0.270] |
+| best step still worst (max) — *withdrawn* | 0.294 [0.222, 0.373] | 0.151 [0.095, 0.214] | 0.325 [0.246, 0.413] | 0.198 [0.135, 0.270] |
 | mean | 0.405 [0.325, 0.492] | 0.222 [0.151, 0.294] | 0.381 [0.302, 0.468] | 0.214 [0.143, 0.286] |
 | median | 0.429 [0.341, 0.516] | 0.238 [0.167, 0.317] | 0.389 [0.310, 0.476] | 0.222 [0.151, 0.302] |
 | **mean of its 2 worst steps** | **0.484** [0.397, 0.571] | 0.254 [0.183, 0.333] | **0.452** [0.365, 0.540] | **0.246** [0.175, 0.325] |
@@ -149,7 +153,7 @@ no normalization.
 | agent selector | agent, hidden | step, hidden | agent, shown | step, shown |
 |---|---|---|---|---|
 | **worst single step (min)** | **0.691** [0.564, 0.818] | **0.164** [0.073, 0.273] | 0.618 [0.491, 0.745] | 0.164 [0.073, 0.273] |
-| best step still worst (max) — *current* | 0.455 [0.327, 0.582] | 0.127 [0.055, 0.218] | 0.473 [0.345, 0.600] | 0.164 [0.073, 0.255] |
+| best step still worst (max) — *withdrawn* | 0.455 [0.327, 0.582] | 0.127 [0.055, 0.218] | 0.473 [0.345, 0.600] | 0.164 [0.073, 0.255] |
 | mean | 0.509 [0.382, 0.636] | 0.145 [0.055, 0.236] | 0.527 [0.400, 0.655] | 0.145 [0.055, 0.236] |
 | median | 0.545 [0.418, 0.673] | 0.127 [0.055, 0.218] | 0.509 [0.382, 0.636] | 0.145 [0.055, 0.236] |
 | mean of its 2 worst steps | 0.618 [0.491, 0.745] | 0.145 [0.055, 0.236] | **0.636** [0.509, 0.764] | 0.164 [0.073, 0.273] |
