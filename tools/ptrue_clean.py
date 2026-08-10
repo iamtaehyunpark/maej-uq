@@ -197,29 +197,22 @@ def cmd_score(argv):
     return 0
 
 
-def auroc(pos, neg):
-    if not pos or not neg:
-        return None
-    w = 0.0
-    for a in pos:
-        for b in neg:
-            w += 1.0 if a > b else 0.5 if a == b else 0.0
-    return w / (len(pos) * len(neg))
-
-
 def boot(vals, n_boot=2000, seed=0):
     import random
 
     rng = random.Random(seed)
     m = []
     for _ in range(n_boot):
-        s = [vals[rng.randrange(len(vals))] for _ in range(len(vals))]
-        m.append(sum(s) / len(s))
+        sample = [vals[rng.randrange(len(vals))] for _ in range(len(vals))]
+        m.append(sum(sample) / len(sample))
     m.sort()
     return m[int(0.025 * n_boot)], m[int(0.975 * n_boot)]
 
 
 def cmd_report(argv):
+    """Top-1 and top-2 accuracy: rank steps by P(True) ascending (least
+    confident first) and ask whether the labelled step, and the labelled agent,
+    are in the top k."""
     rows = [json.loads(l) for l in open(argv[0]) if l.strip()]
     by = {}
     for r in rows:
@@ -227,45 +220,47 @@ def cmd_report(argv):
 
     miss = [r for r in rows if r["p_true"] is None]
     mass = [r["mass_on_answer"] for r in rows if r["p_true"] is not None]
-    print("rows %d   trajectories %d" % (len(rows), len(by)))
+    print("rows %d   trajectories %d   with_gt=%s"
+          % (len(rows), len(by), rows[0].get("with_gt")))
     print("rows with neither True nor False in top-20: %d (%.2f%%)"
           % (len(miss), 100.0 * len(miss) / len(rows)))
     if mass:
-        print("mass on True+False: mean %.3f  median %.3f  min %.3f"
+        print("mass on True+False: mean %.4f  median %.4f  min %.4f"
               % (st.fmean(mass), st.median(mass), min(mass)))
-    print("most common first token:", Counter(r["top_token"] for r in rows).most_common(5))
+    print("most common first token:", Counter(r["top_token"] for r in rows).most_common(4))
     print()
 
+    hdr = "%-6s %6s   %-22s %-22s %-22s %-22s"
+    print(hdr % ("logs", "files", "step top-1", "step top-2", "agent top-1", "agent top-2"))
     for subset in ("alg", "hc"):
-        aus, top1, pg, po = [], [], [], []
+        s1, s2, a1, a2 = [], [], [], []
         for (sub, _f), sc in by.items():
             if sub != subset:
                 continue
-            sc = [x for x in sorted(sc, key=lambda x: x["step_idx"]) if x["p_true"] is not None]
+            sc = [x for x in sc if x["p_true"] is not None]
             if len(sc) < 2:
                 continue
-            g = sc[0]["gold_step"]
-            if not any(x["step_idx"] == g for x in sc):
-                continue
-            a = auroc([-x["p_true"] for x in sc if x["step_idx"] == g],
-                      [-x["p_true"] for x in sc if x["step_idx"] != g])
-            if a is not None:
-                aus.append(a)
-            pick = min(sc, key=lambda x: x["p_true"])
-            top1.append(1.0 if pick["step_idx"] == g else 0.0)
-            pg += [x["p_true"] for x in sc if x["step_idx"] == g]
-            po += [x["p_true"] for x in sc if x["step_idx"] != g]
-        if not aus:
+            gs, ga = sc[0]["gold_step"], str(sc[0]["gold_agent"]).strip().lower()
+            if not any(x["step_idx"] == gs for x in sc):
+                continue  # released label points outside the trajectory
+            ranked = sorted(sc, key=lambda x: x["p_true"])  # least confident first
+
+            def agent_hit(k):
+                names = [str(x["agent"]).strip().lower() for x in ranked[:k]]
+                return 1.0 if any(ga and n and (ga in n or n in ga) for n in names) else 0.0
+
+            s1.append(1.0 if ranked[0]["step_idx"] == gs else 0.0)
+            s2.append(1.0 if gs in [x["step_idx"] for x in ranked[:2]] else 0.0)
+            a1.append(agent_hit(1))
+            a2.append(agent_hit(2))
+        if not s1:
             continue
-        lo, hi = boot(aus)
-        tlo, thi = boot(top1)
-        print("[%s]  n=%d trajectories" % (subset, len(aus)))
-        print("  AUROC, labelled step vs rest of its trajectory : %.3f [%.3f, %.3f]"
-              % (st.fmean(aus), lo, hi))
-        print("  top-1 step accuracy, lowest P(True) wins       : %.3f [%.3f, %.3f]"
-              % (st.fmean(top1), tlo, thi))
-        print("  mean P(True): labelled %.3f  vs rest %.3f" % (st.fmean(pg), st.fmean(po)))
-        print()
+        cells = []
+        for v in (s1, s2, a1, a2):
+            lo, hi = boot(v)
+            cells.append("%.3f [%.3f,%.3f]" % (st.fmean(v), lo, hi))
+        print(hdr % (subset, len(s1), cells[0], cells[1], cells[2], cells[3]))
+    print()
     return 0
 
 
