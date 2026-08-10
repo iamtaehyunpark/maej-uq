@@ -114,6 +114,12 @@ def main(argv: list[str]) -> int:
     for fld in ("embed_divergence", "nli_contradiction"):
         lines += field_rows(root, f"B4 {fld}", {"off": root / f"base/b4/e1_{fld}_nogt"})
 
+    # D1 lookahead-shift fields: delta[t] = p_arm[t] - p_W0[t]. C5 = resp, C6 = own.
+    for arm, cond in (("resp", "C5"), ("own", "C6")):
+        d = root / f"delta/e1_{arm}"
+        if d.exists():
+            lines += field_rows(root, f"D1 delta_{arm} ({cond}−C3)", {"off": d})
+
     print("\n".join(lines))
     return 0
 
