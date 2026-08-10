@@ -643,13 +643,13 @@ The score fields compared here:
 
 | score field | what it is |
 |---|---|
-| judge probability | the judge's probability that the step is correct, read from a single token |
-| judge stated confidence | the judge writes a confidence number instead |
-| judge yes/no verdict | the judge answers correct/incorrect |
+| P(True) | the judge's probability that the step is correct, read from a single token |
+| verbalized confidence | the judge writes a confidence number instead |
+| binary verdict | the judge answers correct/incorrect |
 | embedding divergence | how far the step drifts from what came before — no judge involved |
-| contradiction detector | an off-the-shelf model asking whether the step contradicts earlier ones |
-| shift when the response is added | how much the judge's probability *moves* once the reply to that step is appended |
-| shift when response + next turn are added | the same, also appending that agent's own next turn |
+| NLI contradiction | an off-the-shelf model asking whether the step contradicts earlier ones |
+| P(True) shift, +response | how much P(True) *moves* once the reply to that step is appended |
+| P(True) shift, +response +next turn | the same, also appending that agent's own next turn |
 
 Against them, two kinds of reference point: **simple guesses** that ignore
 content entirely (always blame the first step, the last step, the busiest
