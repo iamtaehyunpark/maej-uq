@@ -584,7 +584,7 @@ FINDINGS = """
    logs it points the wrong way: seeing what came next makes the judge *more*
    confident in the step that was actually wrong. Adding a step's consequence
    was worth testing and did not work.
-6. **Three guesses helps on the step, modestly** — roughly +0.09 to +0.15 over
+6. **Three guesses helps on the step, modestly** — roughly +0.08 to +0.15 over
    a matched random-three control on algorithm-generated logs. The advantage
    sits at the very top of the ranking and thins out as the list grows. On the
    agent, three guesses is at or below chance.
