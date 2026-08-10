@@ -10,3 +10,8 @@ ptrue::Answer with a single word, True or False.
 Answer:
 verbalized::Reply with only your confidence that it is correct, as a probability between 0.00 and 1.00.
 Confidence:
+no_think::
+<think>
+
+</think>
+

@@ -52,6 +52,20 @@ RUBRIC: dict[str, str] = {
 
 READOUTS = ("ptrue", "verbalized", "binary")
 
+#: Closed, empty scratchpad appended to every readout.
+#:
+#: A reasoning judge does not answer at prefill+1 — it opens a scratchpad
+#: first. Measured on the served model, the next-token mass after the bare
+#: question is 93% on "\n\n" and ~1% on {True, False}; with this block
+#: prefilled it is 54%/9% on the two answer spellings. Without it the logit
+#: readout is renormalising over two tokens the model was not about to emit,
+#: and the generated readouts spend hundreds of tokens reasoning before
+#: reaching an answer — which is what truncated them.
+#:
+#: It is appended identically for all three readouts, because E2 is only an
+#: ablation if the scaffold is shared.
+NO_THINK = "\n<think>\n\n</think>\n\n"
+
 _INSTRUCTION = {
     "ptrue": "Answer with a single word, True or False.\nAnswer:",
     "binary": "Answer with a single word, True or False.\nVerdict:",
@@ -89,7 +103,7 @@ def readout(step: Step, kind: str = "ptrue") -> str:
     return (
         f"\n{RUBRIC.get(step.type_norm, RUBRIC['unknown'])}\n"
         f"Question: Is step {step.idx} by '{step.agent}' correct and appropriate "
-        f"given the context above? {_INSTRUCTION[kind]}"
+        f"given the context above? {_INSTRUCTION[kind]}" + NO_THINK
     )
 
 
@@ -98,6 +112,7 @@ def prompt_text() -> str:
     parts = [SYSTEM]
     parts += [f"{k}::{v}" for k, v in sorted(RUBRIC.items())]
     parts += [f"{k}::{v}" for k, v in sorted(_INSTRUCTION.items())]
+    parts.append(f"no_think::{NO_THINK}")
     return "\n".join(parts)
 
 

@@ -390,3 +390,13 @@ def test_unclosed_scratchpad_is_a_parse_failure_not_a_number():
     assert (p, ok) == (0.5, False)
     p, ok = _parse_generated("<think>still thinking", "binary")
     assert (p, ok) == (0.5, False)
+
+
+def test_every_readout_carries_the_same_scratchpad_suppressor():
+    from masattr.judge.prompts import NO_THINK, readout as ro
+
+    step = _rec().steps[1]
+    # Shared across readouts: E2 is only an ablation if the scaffold is shared.
+    for kind in ("ptrue", "verbalized", "binary"):
+        assert ro(step, kind).endswith(NO_THINK)
+    assert "<think>" in NO_THINK and "</think>" in NO_THINK
