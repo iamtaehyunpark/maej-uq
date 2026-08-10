@@ -13,7 +13,7 @@ whole corpus; nothing here is a subsample.
 
 Each failed multi-agent log has one recorded answer: which agent made the
 decisive mistake, and at which step. A method must name both. The two are
-scored separately because they behave very differently (see §3).
+scored separately because they behave very differently (see §4).
 
 Everything is built the same way. A **score field** assigns every step a number
 meaning roughly *how suspect is this step*. Those numbers are put on a common
@@ -41,60 +41,103 @@ run through our judge.
 The **answer** column says whether the judge was shown the reference answer
 while scoring. Both settings are reported because the benchmark defines both.
 
-## 2. Main table
+## 2. Does the score field find the labelled step?
+
+The direct test, with no rule and no threshold in the way: within each trajectory, rank every step by the score and ask whether the step Who&When labels as the decisive mistake ranks above the others. Reported as AUROC per trajectory, averaged over trajectories. **0.5 is chance.** Intervals are bootstrapped over files.
+
+| score field | logs | files | AUROC | mean score at labelled step | elsewhere |
+|---|---|---|---|---|---|
+| P(True), answer hidden | algorithm-generated | 126 | **0.573 [0.515, 0.630]** | 0.295 | 0.332 |
+| P(True), answer hidden | hand-crafted | 55 | **0.613 [0.527, 0.695]** | 0.339 | 0.429 |
+| P(True), answer shown | algorithm-generated | 126 | **0.586 [0.529, 0.639]** | 0.261 | 0.296 |
+| P(True), answer shown | hand-crafted | 55 | **0.622 [0.539, 0.702]** | 0.346 | 0.450 |
+| verbalized confidence | algorithm-generated | 126 | 0.508 [0.468, 0.545] | 0.435 | 0.424 |
+| verbalized confidence | hand-crafted | 55 | 0.483 [0.408, 0.556] | 0.672 | 0.648 |
+| binary verdict | algorithm-generated | 126 | 0.512 [0.473, 0.546] | 0.254 | 0.279 |
+| binary verdict | hand-crafted | 55 | 0.563 [0.496, 0.625] | 0.336 | 0.398 |
+| embedding divergence | algorithm-generated | 126 | 0.384 [0.327, 0.442] | 0.790 | 0.738 |
+| embedding divergence | hand-crafted | 55 | 0.536 [0.469, 0.603] | 0.775 | 0.784 |
+| NLI contradiction | algorithm-generated | 126 | 0.425 [0.366, 0.485] | 0.912 | 0.911 |
+| NLI contradiction | hand-crafted | 55 | **0.612 [0.524, 0.704]** | 0.655 | 0.876 |
+| P(True) shift, +response | algorithm-generated | 126 | 0.512 [0.455, 0.566] | -0.101 | -0.092 |
+| P(True) shift, +response | hand-crafted | 55 | 0.444 [0.362, 0.530] | 0.034 | -0.024 |
+| P(True) shift, +response +next turn | algorithm-generated | 126 | 0.484 [0.424, 0.544] | -0.114 | -0.111 |
+| P(True) shift, +response +next turn | hand-crafted | 55 | 0.444 [0.364, 0.524] | 0.036 | -0.006 |
+
+**Bold** marks fields whose interval excludes chance.
+
+P(True) is above chance on both corpora and in both answer settings, and its mean sits lower on the labelled step than elsewhere — the judge is measurably less confident about the step the benchmark blames. The effect is real and small: an AUROC near 0.58.
+
+Everything downstream follows from that number. On a trajectory averaging under nine steps, an AUROC of 0.58 turns into roughly 19% exact-step accuracy once you force a single pick, which is what §3 reports. The accuracy tables are a lossy projection of this table, not an independent result.
+
+### Broken out by step type (P(True), answer hidden)
+
+Same question, pooled within each step type instead of within each trajectory, and scored against the labelled step versus the steps *before* it. Cells under 20 steps are too small to read.
+
+| step type | steps | AUROC |
+|---|---|---|
+| alg/delegate | 13 | 0.583 *(too small)* |
+| alg/execute | 818 | 0.565 |
+| alg/final | 253 | 0.328 |
+| alg/plan | 13 | 0.556 *(too small)* |
+| hc/delegate | 689 | 0.474 |
+| hc/execute | 689 | 0.608 |
+| hc/final | 56 | 0.778 |
+| hc/plan | 1,559 | 0.689 |
+## 3. What that becomes after forcing one pick
 
 How often each method names the faulty agent, and the faulty step, exactly. Confidence intervals are bootstrapped over files (2,000 resamples). *Rule gave up* is how often the registered rule found no usable split and fell back to simply picking the lowest-scoring step. Rows marked *none* make a prediction directly and never use a rule.
 
 | score field | answer | logs | rule | names agent | names step | rule gave up |
 |---|---|---|---|---|---|---|
-| judge probability | hidden | algorithm-generated | two-regime split (registered) | 0.333 [0.246,0.413] | 0.190 [0.127,0.254] | 74.6% |
-| judge probability | hidden | algorithm-generated | first step below threshold | 0.500 [0.413,0.587] | 0.159 [0.095,0.222] | 74.6% |
-| judge probability | hidden | algorithm-generated | lowest-scoring step | 0.333 [0.254,0.413] | 0.175 [0.111,0.246] | 74.6% |
-| judge probability | hidden | algorithm-generated | relative drop (2x) | 0.333 [0.254,0.413] | 0.175 [0.111,0.246] | 74.6% |
-| judge probability | hidden | hand-crafted | two-regime split (registered) | 0.483 [0.345,0.621] | 0.103 [0.034,0.190] | 5.2% |
-| judge probability | hidden | hand-crafted | first step below threshold | 0.534 [0.397,0.655] | 0.086 [0.017,0.155] | 5.2% |
-| judge probability | hidden | hand-crafted | lowest-scoring step | 0.397 [0.276,0.517] | 0.086 [0.017,0.172] | 5.2% |
-| judge probability | hidden | hand-crafted | relative drop (2x) | 0.397 [0.276,0.517] | 0.086 [0.017,0.172] | 5.2% |
-| judge probability | shown | algorithm-generated | two-regime split (registered) | 0.341 [0.262,0.429] | 0.206 [0.143,0.278] | 69.8% |
-| judge probability | shown | algorithm-generated | first step below threshold | 0.421 [0.333,0.508] | 0.254 [0.183,0.333] | 69.8% |
-| judge probability | shown | algorithm-generated | lowest-scoring step | 0.357 [0.270,0.444] | 0.214 [0.151,0.286] | 69.8% |
-| judge probability | shown | algorithm-generated | relative drop (2x) | 0.357 [0.270,0.444] | 0.214 [0.151,0.286] | 69.8% |
-| judge probability | shown | hand-crafted | two-regime split (registered) | 0.517 [0.397,0.638] | 0.103 [0.034,0.190] | 6.9% |
-| judge probability | shown | hand-crafted | first step below threshold | 0.448 [0.328,0.586] | 0.052 [0.000,0.121] | 6.9% |
-| judge probability | shown | hand-crafted | lowest-scoring step | 0.431 [0.310,0.552] | 0.103 [0.034,0.190] | 6.9% |
-| judge probability | shown | hand-crafted | relative drop (2x) | 0.431 [0.310,0.552] | 0.103 [0.034,0.190] | 6.9% |
-| judge stated confidence | hidden | algorithm-generated | two-regime split (registered) | 0.460 [0.373,0.556] | 0.183 [0.119,0.246] | 77.8% |
-| judge stated confidence | hidden | algorithm-generated | first step below threshold | 0.524 [0.437,0.611] | 0.190 [0.127,0.262] | 77.8% |
-| judge stated confidence | hidden | algorithm-generated | lowest-scoring step | 0.516 [0.429,0.603] | 0.175 [0.111,0.238] | 77.8% |
-| judge stated confidence | hidden | algorithm-generated | relative drop (2x) | 0.516 [0.429,0.603] | 0.175 [0.111,0.238] | 77.8% |
-| judge stated confidence | hidden | hand-crafted | two-regime split (registered) | 0.448 [0.328,0.569] | 0.086 [0.017,0.155] | 31.0% |
-| judge stated confidence | hidden | hand-crafted | first step below threshold | 0.052 [0.000,0.121] | 0.000 [0.000,0.000] | 31.0% |
-| judge stated confidence | hidden | hand-crafted | lowest-scoring step | 0.328 [0.207,0.448] | 0.034 [0.000,0.086] | 31.0% |
-| judge stated confidence | hidden | hand-crafted | relative drop (2x) | 0.293 [0.190,0.414] | 0.034 [0.000,0.086] | 31.0% |
-| judge stated confidence | shown | algorithm-generated | two-regime split (registered) | 0.389 [0.302,0.476] | 0.159 [0.103,0.222] | 75.4% |
-| judge stated confidence | shown | algorithm-generated | first step below threshold | 0.476 [0.389,0.563] | 0.175 [0.111,0.238] | 75.4% |
-| judge stated confidence | shown | algorithm-generated | lowest-scoring step | 0.460 [0.373,0.548] | 0.151 [0.087,0.214] | 75.4% |
-| judge stated confidence | shown | algorithm-generated | relative drop (2x) | 0.460 [0.373,0.548] | 0.151 [0.087,0.214] | 75.4% |
-| judge stated confidence | shown | hand-crafted | two-regime split (registered) | 0.466 [0.345,0.603] | 0.103 [0.034,0.190] | 25.9% |
-| judge stated confidence | shown | hand-crafted | first step below threshold | 0.034 [0.000,0.086] | 0.000 [0.000,0.000] | 25.9% |
-| judge stated confidence | shown | hand-crafted | lowest-scoring step | 0.345 [0.224,0.466] | 0.052 [0.000,0.121] | 25.9% |
-| judge stated confidence | shown | hand-crafted | relative drop (2x) | 0.328 [0.207,0.448] | 0.052 [0.000,0.121] | 25.9% |
-| judge yes/no verdict | hidden | algorithm-generated | two-regime split (registered) | 0.421 [0.333,0.508] | 0.206 [0.143,0.278] | 73.0% |
-| judge yes/no verdict | hidden | algorithm-generated | first step below threshold | 0.460 [0.373,0.548] | 0.167 [0.103,0.230] | 73.0% |
-| judge yes/no verdict | hidden | algorithm-generated | lowest-scoring step | 0.444 [0.357,0.532] | 0.151 [0.087,0.214] | 73.0% |
-| judge yes/no verdict | hidden | algorithm-generated | relative drop (2x) | 0.444 [0.357,0.532] | 0.151 [0.087,0.214] | 73.0% |
-| judge yes/no verdict | hidden | hand-crafted | two-regime split (registered) | 0.397 [0.276,0.534] | 0.121 [0.034,0.207] | 8.6% |
-| judge yes/no verdict | hidden | hand-crafted | first step below threshold | 0.414 [0.276,0.534] | 0.052 [0.000,0.121] | 8.6% |
-| judge yes/no verdict | hidden | hand-crafted | lowest-scoring step | 0.397 [0.276,0.517] | 0.086 [0.017,0.172] | 8.6% |
-| judge yes/no verdict | hidden | hand-crafted | relative drop (2x) | 0.397 [0.276,0.517] | 0.086 [0.017,0.172] | 8.6% |
-| judge yes/no verdict | shown | algorithm-generated | two-regime split (registered) | 0.429 [0.341,0.516] | 0.222 [0.159,0.294] | 70.6% |
-| judge yes/no verdict | shown | algorithm-generated | first step below threshold | 0.492 [0.405,0.579] | 0.183 [0.119,0.254] | 70.6% |
-| judge yes/no verdict | shown | algorithm-generated | lowest-scoring step | 0.452 [0.365,0.540] | 0.159 [0.095,0.222] | 70.6% |
-| judge yes/no verdict | shown | algorithm-generated | relative drop (2x) | 0.452 [0.365,0.540] | 0.159 [0.095,0.222] | 70.6% |
-| judge yes/no verdict | shown | hand-crafted | two-regime split (registered) | 0.379 [0.259,0.500] | 0.121 [0.034,0.207] | 10.3% |
-| judge yes/no verdict | shown | hand-crafted | first step below threshold | 0.276 [0.155,0.397] | 0.052 [0.000,0.121] | 10.3% |
-| judge yes/no verdict | shown | hand-crafted | lowest-scoring step | 0.362 [0.241,0.483] | 0.052 [0.000,0.121] | 10.3% |
-| judge yes/no verdict | shown | hand-crafted | relative drop (2x) | 0.362 [0.241,0.483] | 0.052 [0.000,0.121] | 10.3% |
+| P(True) | hidden | algorithm-generated | two-regime split (registered) | 0.333 [0.246,0.413] | 0.190 [0.127,0.254] | 74.6% |
+| P(True) | hidden | algorithm-generated | first step below threshold | 0.500 [0.413,0.587] | 0.159 [0.095,0.222] | 74.6% |
+| P(True) | hidden | algorithm-generated | lowest-scoring step | 0.333 [0.254,0.413] | 0.175 [0.111,0.246] | 74.6% |
+| P(True) | hidden | algorithm-generated | relative drop (2x) | 0.333 [0.254,0.413] | 0.175 [0.111,0.246] | 74.6% |
+| P(True) | hidden | hand-crafted | two-regime split (registered) | 0.483 [0.345,0.621] | 0.103 [0.034,0.190] | 5.2% |
+| P(True) | hidden | hand-crafted | first step below threshold | 0.534 [0.397,0.655] | 0.086 [0.017,0.155] | 5.2% |
+| P(True) | hidden | hand-crafted | lowest-scoring step | 0.397 [0.276,0.517] | 0.086 [0.017,0.172] | 5.2% |
+| P(True) | hidden | hand-crafted | relative drop (2x) | 0.397 [0.276,0.517] | 0.086 [0.017,0.172] | 5.2% |
+| P(True) | shown | algorithm-generated | two-regime split (registered) | 0.341 [0.262,0.429] | 0.206 [0.143,0.278] | 69.8% |
+| P(True) | shown | algorithm-generated | first step below threshold | 0.421 [0.333,0.508] | 0.254 [0.183,0.333] | 69.8% |
+| P(True) | shown | algorithm-generated | lowest-scoring step | 0.357 [0.270,0.444] | 0.214 [0.151,0.286] | 69.8% |
+| P(True) | shown | algorithm-generated | relative drop (2x) | 0.357 [0.270,0.444] | 0.214 [0.151,0.286] | 69.8% |
+| P(True) | shown | hand-crafted | two-regime split (registered) | 0.517 [0.397,0.638] | 0.103 [0.034,0.190] | 6.9% |
+| P(True) | shown | hand-crafted | first step below threshold | 0.448 [0.328,0.586] | 0.052 [0.000,0.121] | 6.9% |
+| P(True) | shown | hand-crafted | lowest-scoring step | 0.431 [0.310,0.552] | 0.103 [0.034,0.190] | 6.9% |
+| P(True) | shown | hand-crafted | relative drop (2x) | 0.431 [0.310,0.552] | 0.103 [0.034,0.190] | 6.9% |
+| verbalized confidence | hidden | algorithm-generated | two-regime split (registered) | 0.460 [0.373,0.556] | 0.183 [0.119,0.246] | 77.8% |
+| verbalized confidence | hidden | algorithm-generated | first step below threshold | 0.524 [0.437,0.611] | 0.190 [0.127,0.262] | 77.8% |
+| verbalized confidence | hidden | algorithm-generated | lowest-scoring step | 0.516 [0.429,0.603] | 0.175 [0.111,0.238] | 77.8% |
+| verbalized confidence | hidden | algorithm-generated | relative drop (2x) | 0.516 [0.429,0.603] | 0.175 [0.111,0.238] | 77.8% |
+| verbalized confidence | hidden | hand-crafted | two-regime split (registered) | 0.448 [0.328,0.569] | 0.086 [0.017,0.155] | 31.0% |
+| verbalized confidence | hidden | hand-crafted | first step below threshold | 0.052 [0.000,0.121] | 0.000 [0.000,0.000] | 31.0% |
+| verbalized confidence | hidden | hand-crafted | lowest-scoring step | 0.328 [0.207,0.448] | 0.034 [0.000,0.086] | 31.0% |
+| verbalized confidence | hidden | hand-crafted | relative drop (2x) | 0.293 [0.190,0.414] | 0.034 [0.000,0.086] | 31.0% |
+| verbalized confidence | shown | algorithm-generated | two-regime split (registered) | 0.389 [0.302,0.476] | 0.159 [0.103,0.222] | 75.4% |
+| verbalized confidence | shown | algorithm-generated | first step below threshold | 0.476 [0.389,0.563] | 0.175 [0.111,0.238] | 75.4% |
+| verbalized confidence | shown | algorithm-generated | lowest-scoring step | 0.460 [0.373,0.548] | 0.151 [0.087,0.214] | 75.4% |
+| verbalized confidence | shown | algorithm-generated | relative drop (2x) | 0.460 [0.373,0.548] | 0.151 [0.087,0.214] | 75.4% |
+| verbalized confidence | shown | hand-crafted | two-regime split (registered) | 0.466 [0.345,0.603] | 0.103 [0.034,0.190] | 25.9% |
+| verbalized confidence | shown | hand-crafted | first step below threshold | 0.034 [0.000,0.086] | 0.000 [0.000,0.000] | 25.9% |
+| verbalized confidence | shown | hand-crafted | lowest-scoring step | 0.345 [0.224,0.466] | 0.052 [0.000,0.121] | 25.9% |
+| verbalized confidence | shown | hand-crafted | relative drop (2x) | 0.328 [0.207,0.448] | 0.052 [0.000,0.121] | 25.9% |
+| binary verdict | hidden | algorithm-generated | two-regime split (registered) | 0.421 [0.333,0.508] | 0.206 [0.143,0.278] | 73.0% |
+| binary verdict | hidden | algorithm-generated | first step below threshold | 0.460 [0.373,0.548] | 0.167 [0.103,0.230] | 73.0% |
+| binary verdict | hidden | algorithm-generated | lowest-scoring step | 0.444 [0.357,0.532] | 0.151 [0.087,0.214] | 73.0% |
+| binary verdict | hidden | algorithm-generated | relative drop (2x) | 0.444 [0.357,0.532] | 0.151 [0.087,0.214] | 73.0% |
+| binary verdict | hidden | hand-crafted | two-regime split (registered) | 0.397 [0.276,0.534] | 0.121 [0.034,0.207] | 8.6% |
+| binary verdict | hidden | hand-crafted | first step below threshold | 0.414 [0.276,0.534] | 0.052 [0.000,0.121] | 8.6% |
+| binary verdict | hidden | hand-crafted | lowest-scoring step | 0.397 [0.276,0.517] | 0.086 [0.017,0.172] | 8.6% |
+| binary verdict | hidden | hand-crafted | relative drop (2x) | 0.397 [0.276,0.517] | 0.086 [0.017,0.172] | 8.6% |
+| binary verdict | shown | algorithm-generated | two-regime split (registered) | 0.429 [0.341,0.516] | 0.222 [0.159,0.294] | 70.6% |
+| binary verdict | shown | algorithm-generated | first step below threshold | 0.492 [0.405,0.579] | 0.183 [0.119,0.254] | 70.6% |
+| binary verdict | shown | algorithm-generated | lowest-scoring step | 0.452 [0.365,0.540] | 0.159 [0.095,0.222] | 70.6% |
+| binary verdict | shown | algorithm-generated | relative drop (2x) | 0.452 [0.365,0.540] | 0.159 [0.095,0.222] | 70.6% |
+| binary verdict | shown | hand-crafted | two-regime split (registered) | 0.379 [0.259,0.500] | 0.121 [0.034,0.207] | 10.3% |
+| binary verdict | shown | hand-crafted | first step below threshold | 0.276 [0.155,0.397] | 0.052 [0.000,0.121] | 10.3% |
+| binary verdict | shown | hand-crafted | lowest-scoring step | 0.362 [0.241,0.483] | 0.052 [0.000,0.121] | 10.3% |
+| binary verdict | shown | hand-crafted | relative drop (2x) | 0.362 [0.241,0.483] | 0.052 [0.000,0.121] | 10.3% |
 | embedding divergence | hidden | algorithm-generated | two-regime split (registered) | 0.452 [0.365,0.540] | 0.135 [0.079,0.198] | 92.1% |
 | embedding divergence | hidden | algorithm-generated | first step below threshold | 0.492 [0.405,0.579] | 0.159 [0.095,0.222] | 92.1% |
 | embedding divergence | hidden | algorithm-generated | lowest-scoring step | 0.452 [0.365,0.540] | 0.151 [0.087,0.214] | 92.1% |
@@ -103,30 +146,30 @@ How often each method names the faulty agent, and the faulty step, exactly. Conf
 | embedding divergence | hidden | hand-crafted | first step below threshold | 0.000 [0.000,0.000] | 0.000 [0.000,0.000] | 67.2% |
 | embedding divergence | hidden | hand-crafted | lowest-scoring step | 0.241 [0.138,0.362] | 0.000 [0.000,0.000] | 67.2% |
 | embedding divergence | hidden | hand-crafted | relative drop (2x) | 0.207 [0.103,0.310] | 0.000 [0.000,0.000] | 67.2% |
-| contradiction detector | hidden | algorithm-generated | two-regime split (registered) | 0.413 [0.325,0.500] | 0.119 [0.063,0.175] | 97.6% |
-| contradiction detector | hidden | algorithm-generated | first step below threshold | 0.492 [0.405,0.579] | 0.159 [0.095,0.222] | 97.6% |
-| contradiction detector | hidden | algorithm-generated | lowest-scoring step | 0.413 [0.325,0.500] | 0.119 [0.063,0.175] | 97.6% |
-| contradiction detector | hidden | algorithm-generated | relative drop (2x) | 0.413 [0.325,0.500] | 0.119 [0.063,0.175] | 97.6% |
-| contradiction detector | hidden | hand-crafted | two-regime split (registered) | 0.414 [0.293,0.552] | 0.034 [0.000,0.086] | 65.5% |
-| contradiction detector | hidden | hand-crafted | first step below threshold | 0.328 [0.207,0.448] | 0.034 [0.000,0.086] | 65.5% |
-| contradiction detector | hidden | hand-crafted | lowest-scoring step | 0.414 [0.293,0.552] | 0.052 [0.000,0.121] | 65.5% |
-| contradiction detector | hidden | hand-crafted | relative drop (2x) | 0.483 [0.345,0.621] | 0.086 [0.017,0.172] | 65.5% |
-| shift when the response is added | hidden | algorithm-generated | two-regime split (registered) | 0.381 [0.294,0.468] | 0.159 [0.095,0.230] | 64.3% |
-| shift when the response is added | hidden | algorithm-generated | first step below threshold | 0.516 [0.429,0.603] | 0.198 [0.127,0.270] | 64.3% |
-| shift when the response is added | hidden | algorithm-generated | lowest-scoring step | 0.365 [0.278,0.444] | 0.135 [0.079,0.198] | 64.3% |
-| shift when the response is added | hidden | algorithm-generated | relative drop (2x) | 0.365 [0.278,0.444] | 0.135 [0.079,0.198] | 64.3% |
-| shift when the response is added | hidden | hand-crafted | two-regime split (registered) | 0.414 [0.293,0.534] | 0.069 [0.017,0.138] | 32.8% |
-| shift when the response is added | hidden | hand-crafted | first step below threshold | 0.000 [0.000,0.000] | 0.000 [0.000,0.000] | 32.8% |
-| shift when the response is added | hidden | hand-crafted | lowest-scoring step | 0.362 [0.241,0.483] | 0.052 [0.000,0.121] | 32.8% |
-| shift when the response is added | hidden | hand-crafted | relative drop (2x) | 0.379 [0.259,0.500] | 0.052 [0.000,0.121] | 32.8% |
-| shift when response + next turn are added | hidden | algorithm-generated | two-regime split (registered) | 0.413 [0.325,0.492] | 0.151 [0.087,0.214] | 71.4% |
-| shift when response + next turn are added | hidden | algorithm-generated | first step below threshold | 0.468 [0.381,0.556] | 0.151 [0.087,0.214] | 71.4% |
-| shift when response + next turn are added | hidden | algorithm-generated | lowest-scoring step | 0.421 [0.333,0.508] | 0.167 [0.103,0.238] | 71.4% |
-| shift when response + next turn are added | hidden | algorithm-generated | relative drop (2x) | 0.421 [0.333,0.508] | 0.167 [0.103,0.238] | 71.4% |
-| shift when response + next turn are added | hidden | hand-crafted | two-regime split (registered) | 0.397 [0.276,0.517] | 0.069 [0.017,0.138] | 20.7% |
-| shift when response + next turn are added | hidden | hand-crafted | first step below threshold | 0.000 [0.000,0.000] | 0.000 [0.000,0.000] | 20.7% |
-| shift when response + next turn are added | hidden | hand-crafted | lowest-scoring step | 0.328 [0.207,0.448] | 0.017 [0.000,0.052] | 20.7% |
-| shift when response + next turn are added | hidden | hand-crafted | relative drop (2x) | 0.328 [0.207,0.448] | 0.017 [0.000,0.052] | 20.7% |
+| NLI contradiction | hidden | algorithm-generated | two-regime split (registered) | 0.413 [0.325,0.500] | 0.119 [0.063,0.175] | 97.6% |
+| NLI contradiction | hidden | algorithm-generated | first step below threshold | 0.492 [0.405,0.579] | 0.159 [0.095,0.222] | 97.6% |
+| NLI contradiction | hidden | algorithm-generated | lowest-scoring step | 0.413 [0.325,0.500] | 0.119 [0.063,0.175] | 97.6% |
+| NLI contradiction | hidden | algorithm-generated | relative drop (2x) | 0.413 [0.325,0.500] | 0.119 [0.063,0.175] | 97.6% |
+| NLI contradiction | hidden | hand-crafted | two-regime split (registered) | 0.414 [0.293,0.552] | 0.034 [0.000,0.086] | 65.5% |
+| NLI contradiction | hidden | hand-crafted | first step below threshold | 0.328 [0.207,0.448] | 0.034 [0.000,0.086] | 65.5% |
+| NLI contradiction | hidden | hand-crafted | lowest-scoring step | 0.414 [0.293,0.552] | 0.052 [0.000,0.121] | 65.5% |
+| NLI contradiction | hidden | hand-crafted | relative drop (2x) | 0.483 [0.345,0.621] | 0.086 [0.017,0.172] | 65.5% |
+| P(True) shift, +response | hidden | algorithm-generated | two-regime split (registered) | 0.381 [0.294,0.468] | 0.159 [0.095,0.230] | 64.3% |
+| P(True) shift, +response | hidden | algorithm-generated | first step below threshold | 0.516 [0.429,0.603] | 0.198 [0.127,0.270] | 64.3% |
+| P(True) shift, +response | hidden | algorithm-generated | lowest-scoring step | 0.365 [0.278,0.444] | 0.135 [0.079,0.198] | 64.3% |
+| P(True) shift, +response | hidden | algorithm-generated | relative drop (2x) | 0.365 [0.278,0.444] | 0.135 [0.079,0.198] | 64.3% |
+| P(True) shift, +response | hidden | hand-crafted | two-regime split (registered) | 0.414 [0.293,0.534] | 0.069 [0.017,0.138] | 32.8% |
+| P(True) shift, +response | hidden | hand-crafted | first step below threshold | 0.000 [0.000,0.000] | 0.000 [0.000,0.000] | 32.8% |
+| P(True) shift, +response | hidden | hand-crafted | lowest-scoring step | 0.362 [0.241,0.483] | 0.052 [0.000,0.121] | 32.8% |
+| P(True) shift, +response | hidden | hand-crafted | relative drop (2x) | 0.379 [0.259,0.500] | 0.052 [0.000,0.121] | 32.8% |
+| P(True) shift, +response +next turn | hidden | algorithm-generated | two-regime split (registered) | 0.413 [0.325,0.492] | 0.151 [0.087,0.214] | 71.4% |
+| P(True) shift, +response +next turn | hidden | algorithm-generated | first step below threshold | 0.468 [0.381,0.556] | 0.151 [0.087,0.214] | 71.4% |
+| P(True) shift, +response +next turn | hidden | algorithm-generated | lowest-scoring step | 0.421 [0.333,0.508] | 0.167 [0.103,0.238] | 71.4% |
+| P(True) shift, +response +next turn | hidden | algorithm-generated | relative drop (2x) | 0.421 [0.333,0.508] | 0.167 [0.103,0.238] | 71.4% |
+| P(True) shift, +response +next turn | hidden | hand-crafted | two-regime split (registered) | 0.397 [0.276,0.517] | 0.069 [0.017,0.138] | 20.7% |
+| P(True) shift, +response +next turn | hidden | hand-crafted | first step below threshold | 0.000 [0.000,0.000] | 0.000 [0.000,0.000] | 20.7% |
+| P(True) shift, +response +next turn | hidden | hand-crafted | lowest-scoring step | 0.328 [0.207,0.448] | 0.017 [0.000,0.052] | 20.7% |
+| P(True) shift, +response +next turn | hidden | hand-crafted | relative drop (2x) | 0.328 [0.207,0.448] | 0.017 [0.000,0.052] | 20.7% |
 | simple guess: first step | — | algorithm-generated | *none* | 0.492 [0.405,0.579] | 0.159 [0.095,0.222] | — |
 | simple guess: last step | — | algorithm-generated | *none* | 0.357 [0.270,0.444] | 0.008 [0.000,0.024] | — |
 | simple guess: majority agent | — | algorithm-generated | *none* | 0.365 [0.278,0.444] | 0.103 [0.056,0.167] | — |
@@ -175,7 +218,7 @@ The main table shows four rules for every field. All eight are listed here for t
 | relative drop (2.5x) | 0.357 [0.270,0.444] | 0.214 [0.151,0.286] | 0.431 [0.310,0.552] | 0.103 [0.034,0.190] |
 
 
-## 3. Naming the right agent mostly measures position
+## 4. Naming the right agent mostly measures position
 
 The agent is whoever owns the step a method picks. So this score inherits any positional pattern in the corpus — and there is a big one, which the simple guesses collect for free.
 
@@ -195,7 +238,7 @@ Where the registered rule actually picks, and how often it names the right agent
 
 On algorithm-generated logs the faulty agent owns about half of all first steps but only a third of steps overall, so *always blame whoever spoke first* banks a positional bonus the score field never tries to earn. The registered rule picks step 0 in roughly one log in seven, and its agent score falls steadily the deeper it picks — ending up at the plain ownership share. On this column the rule performs at the level of picking a step at random. Naming the right **step** is where the score field's signal actually shows up.
 
-## 4. Allowing more than one guess
+## 5. Allowing more than one guess
 
 Two different ways of being lenient. **Near-miss** accepts a pick that lands within one or two steps of the true one. **Three guesses** accepts the true step appearing anywhere among the three most suspicious steps. The second is ranked on the score field itself — the registered rule returns a single step and has no three-guess form.
 
@@ -214,22 +257,22 @@ Two different ways of being lenient. **Near-miss** accepts a pick that lands wit
 
 | score field | logs | files | top 1 | top 3 | random 3 | gain | top 5 |
 |---|---|---|---|---|---|---|---|
-| judge probability (answer hidden) | algorithm-generated | 126 | 0.175 | 0.444 [0.357,0.532] | 0.360 | +0.085 | 0.683 |
-| judge probability (answer hidden) | hand-crafted | 55 | 0.091 | 0.218 [0.109,0.327] | 0.116 | +0.102 | 0.273 |
-| judge probability (answer shown) | algorithm-generated | 126 | 0.214 | 0.492 [0.405,0.571] | 0.360 | +0.132 | 0.698 |
-| judge probability (answer shown) | hand-crafted | 55 | 0.109 | 0.218 [0.109,0.327] | 0.116 | +0.102 | 0.291 |
-| judge stated confidence | algorithm-generated | 126 | 0.175 | 0.437 [0.349,0.516] | 0.360 | +0.077 | 0.706 |
-| judge stated confidence | hand-crafted | 55 | 0.036 | 0.073 [0.018,0.145] | 0.116 | -0.043 | 0.164 |
-| judge yes/no verdict | algorithm-generated | 126 | 0.151 | 0.508 [0.421,0.595] | 0.360 | +0.148 | 0.746 |
-| judge yes/no verdict | hand-crafted | 55 | 0.091 | 0.145 [0.055,0.236] | 0.116 | +0.030 | 0.182 |
+| P(True), answer hidden | algorithm-generated | 126 | 0.175 | 0.444 [0.357,0.532] | 0.360 | +0.085 | 0.683 |
+| P(True), answer hidden | hand-crafted | 55 | 0.091 | 0.218 [0.109,0.327] | 0.116 | +0.102 | 0.273 |
+| P(True), answer shown | algorithm-generated | 126 | 0.214 | 0.492 [0.405,0.571] | 0.360 | +0.132 | 0.698 |
+| P(True), answer shown | hand-crafted | 55 | 0.109 | 0.218 [0.109,0.327] | 0.116 | +0.102 | 0.291 |
+| verbalized confidence | algorithm-generated | 126 | 0.175 | 0.437 [0.349,0.516] | 0.360 | +0.077 | 0.706 |
+| verbalized confidence | hand-crafted | 55 | 0.036 | 0.073 [0.018,0.145] | 0.116 | -0.043 | 0.164 |
+| binary verdict | algorithm-generated | 126 | 0.151 | 0.508 [0.421,0.595] | 0.360 | +0.148 | 0.746 |
+| binary verdict | hand-crafted | 55 | 0.091 | 0.145 [0.055,0.236] | 0.116 | +0.030 | 0.182 |
 | embedding divergence | algorithm-generated | 126 | 0.151 | 0.206 [0.135,0.278] | 0.360 | -0.154 | 0.405 |
 | embedding divergence | hand-crafted | 55 | 0.000 | 0.036 [0.000,0.091] | 0.116 | -0.079 | 0.127 |
-| contradiction detector | algorithm-generated | 126 | 0.119 | 0.270 [0.198,0.349] | 0.360 | -0.090 | 0.468 |
-| contradiction detector | hand-crafted | 55 | 0.055 | 0.109 [0.036,0.200] | 0.116 | -0.007 | 0.255 |
-| shift when the response is added | algorithm-generated | 126 | 0.135 | 0.365 [0.278,0.452] | 0.360 | +0.005 | 0.587 |
-| shift when the response is added | hand-crafted | 55 | 0.055 | 0.091 [0.018,0.182] | 0.116 | -0.025 | 0.127 |
-| shift when response + next turn are added | algorithm-generated | 126 | 0.167 | 0.333 [0.254,0.421] | 0.360 | -0.027 | 0.563 |
-| shift when response + next turn are added | hand-crafted | 55 | 0.018 | 0.055 [0.000,0.127] | 0.116 | -0.061 | 0.200 |
+| NLI contradiction | algorithm-generated | 126 | 0.119 | 0.270 [0.198,0.349] | 0.360 | -0.090 | 0.468 |
+| NLI contradiction | hand-crafted | 55 | 0.055 | 0.109 [0.036,0.200] | 0.116 | -0.007 | 0.255 |
+| P(True) shift, +response | algorithm-generated | 126 | 0.135 | 0.365 [0.278,0.452] | 0.360 | +0.005 | 0.587 |
+| P(True) shift, +response | hand-crafted | 55 | 0.055 | 0.091 [0.018,0.182] | 0.116 | -0.025 | 0.127 |
+| P(True) shift, +response +next turn | algorithm-generated | 126 | 0.167 | 0.333 [0.254,0.421] | 0.360 | -0.027 | 0.563 |
+| P(True) shift, +response +next turn | hand-crafted | 55 | 0.018 | 0.055 [0.000,0.127] | 0.116 | -0.061 | 0.200 |
 
 ### Three guesses — naming the agent
 
@@ -237,24 +280,24 @@ Two different ways of being lenient. **Near-miss** accepts a pick that lands wit
 
 | score field | logs | files | top 1 | top 3 | random 3 | gain | agents covered |
 |---|---|---|---|---|---|---|---|
-| judge probability (answer hidden) | algorithm-generated | 126 | 0.333 | 0.651 | 0.703 | -0.052 | 2.16 |
-| judge probability (answer hidden) | hand-crafted | 55 | 0.400 | 0.582 | 0.636 | -0.054 | 1.33 |
-| judge probability (answer shown) | algorithm-generated | 126 | 0.357 | 0.683 | 0.703 | -0.021 | 2.14 |
-| judge probability (answer shown) | hand-crafted | 55 | 0.436 | 0.600 | 0.636 | -0.036 | 1.33 |
-| judge stated confidence | algorithm-generated | 126 | 0.516 | 0.738 | 0.703 | +0.035 | 2.40 |
-| judge stated confidence | hand-crafted | 55 | 0.345 | 0.418 | 0.636 | -0.218 | 1.22 |
-| judge yes/no verdict | algorithm-generated | 126 | 0.444 | 0.762 | 0.703 | +0.059 | 2.43 |
-| judge yes/no verdict | hand-crafted | 55 | 0.400 | 0.491 | 0.636 | -0.145 | 1.18 |
+| P(True), answer hidden | algorithm-generated | 126 | 0.333 | 0.651 | 0.703 | -0.052 | 2.16 |
+| P(True), answer hidden | hand-crafted | 55 | 0.400 | 0.582 | 0.636 | -0.054 | 1.33 |
+| P(True), answer shown | algorithm-generated | 126 | 0.357 | 0.683 | 0.703 | -0.021 | 2.14 |
+| P(True), answer shown | hand-crafted | 55 | 0.436 | 0.600 | 0.636 | -0.036 | 1.33 |
+| verbalized confidence | algorithm-generated | 126 | 0.516 | 0.738 | 0.703 | +0.035 | 2.40 |
+| verbalized confidence | hand-crafted | 55 | 0.345 | 0.418 | 0.636 | -0.218 | 1.22 |
+| binary verdict | algorithm-generated | 126 | 0.444 | 0.762 | 0.703 | +0.059 | 2.43 |
+| binary verdict | hand-crafted | 55 | 0.400 | 0.491 | 0.636 | -0.145 | 1.18 |
 | embedding divergence | algorithm-generated | 126 | 0.452 | 0.643 | 0.703 | -0.060 | 2.29 |
 | embedding divergence | hand-crafted | 55 | 0.255 | 0.364 | 0.636 | -0.272 | 1.71 |
-| contradiction detector | algorithm-generated | 126 | 0.413 | 0.690 | 0.703 | -0.013 | 2.29 |
-| contradiction detector | hand-crafted | 55 | 0.418 | 0.655 | 0.636 | +0.019 | 1.60 |
-| shift when the response is added | algorithm-generated | 126 | 0.365 | 0.675 | 0.703 | -0.029 | 2.25 |
-| shift when the response is added | hand-crafted | 55 | 0.382 | 0.527 | 0.636 | -0.109 | 1.51 |
-| shift when response + next turn are added | algorithm-generated | 126 | 0.421 | 0.683 | 0.703 | -0.021 | 2.23 |
-| shift when response + next turn are added | hand-crafted | 55 | 0.327 | 0.600 | 0.636 | -0.036 | 1.55 |
+| NLI contradiction | algorithm-generated | 126 | 0.413 | 0.690 | 0.703 | -0.013 | 2.29 |
+| NLI contradiction | hand-crafted | 55 | 0.418 | 0.655 | 0.636 | +0.019 | 1.60 |
+| P(True) shift, +response | algorithm-generated | 126 | 0.365 | 0.675 | 0.703 | -0.029 | 2.25 |
+| P(True) shift, +response | hand-crafted | 55 | 0.382 | 0.527 | 0.636 | -0.109 | 1.51 |
+| P(True) shift, +response +next turn | algorithm-generated | 126 | 0.421 | 0.683 | 0.703 | -0.021 | 2.23 |
+| P(True) shift, +response +next turn | hand-crafted | 55 | 0.327 | 0.600 | 0.636 | -0.036 | 1.55 |
 
-## 5. Why hand-crafted logs flatter the simple guesses
+## 6. Why hand-crafted logs flatter the simple guesses
 
 | simple guess | who was at fault | logs | names agent | names step |
 |---|---|---|---|---|
@@ -274,26 +317,26 @@ Two different ways of being lenient. **Near-miss** accepts a pick that lands wit
 
 *Blame the busiest agent* is right every time the orchestrator was at fault and wrong every time a worker was, and the ownership shares split the same way. On hand-crafted logs the orchestrator owns most steps of most logs, so that guess reproduces the answer exactly when the orchestrator erred and never otherwise. It is a property of the corpus, not a skill.
 
-## 6. Appendix — unreadable outputs and rule fallback
+## 7. Appendix — unreadable outputs and rule fallback
 
 | score field | logs | rows | share readable |
 |---|---|---|---|
-| judge probability (answer hidden) | algorithm-generated | 1,099 | 1.0000 |
-| judge probability (answer hidden) | hand-crafted | 2,993 | 1.0000 |
-| judge probability (answer shown) | algorithm-generated | 1,099 | 1.0000 |
-| judge probability (answer shown) | hand-crafted | 2,993 | 1.0000 |
-| judge stated confidence | algorithm-generated | 1,099 | 1.0000 |
-| judge stated confidence | hand-crafted | 2,993 | 0.9993 |
-| judge yes/no verdict | algorithm-generated | 1,099 | 1.0000 |
-| judge yes/no verdict | hand-crafted | 2,993 | 0.9940 |
+| P(True), answer hidden | algorithm-generated | 1,099 | 1.0000 |
+| P(True), answer hidden | hand-crafted | 2,993 | 1.0000 |
+| P(True), answer shown | algorithm-generated | 1,099 | 1.0000 |
+| P(True), answer shown | hand-crafted | 2,993 | 1.0000 |
+| verbalized confidence | algorithm-generated | 1,099 | 1.0000 |
+| verbalized confidence | hand-crafted | 2,993 | 0.9993 |
+| binary verdict | algorithm-generated | 1,099 | 1.0000 |
+| binary verdict | hand-crafted | 2,993 | 0.9940 |
 | embedding divergence | algorithm-generated | 1,099 | 0.8854 |
 | embedding divergence | hand-crafted | 2,993 | 0.9806 |
-| contradiction detector | algorithm-generated | 1,099 | 0.8854 |
-| contradiction detector | hand-crafted | 2,993 | 0.9806 |
-| shift when the response is added | algorithm-generated | 1,099 | 1.0000 |
-| shift when the response is added | hand-crafted | 2,993 | 1.0000 |
-| shift when response + next turn are added | algorithm-generated | 1,099 | 1.0000 |
-| shift when response + next turn are added | hand-crafted | 2,993 | 1.0000 |
+| NLI contradiction | algorithm-generated | 1,099 | 0.8854 |
+| NLI contradiction | hand-crafted | 2,993 | 0.9806 |
+| P(True) shift, +response | algorithm-generated | 1,099 | 1.0000 |
+| P(True) shift, +response | hand-crafted | 2,993 | 1.0000 |
+| P(True) shift, +response +next turn | algorithm-generated | 1,099 | 1.0000 |
+| P(True) shift, +response +next turn | hand-crafted | 2,993 | 1.0000 |
 
 > The two non-judge fields cannot score a log's first step — there is nothing before it to compare against — so their figure is exactly one unscoreable row per log, by construction rather than a failure.
 
@@ -317,7 +360,7 @@ How often the registered rule gave up, and why:
 | shown | algorithm-generated | 126 | 69.8% | boundary 59, low contrast 29, regime found 38 |
 | shown | hand-crafted | 58 | 6.9% | boundary 4, regime found 54 |
 
-## 7. How these numbers were produced
+## 8. How these numbers were produced
 
 | item | value |
 |---|---|
@@ -338,31 +381,29 @@ Rebuild every table here with:
 python tools/results_report.py runs <data-root> > docs/RESULTS.md
 ```
 
-## 8. What this adds up to
+## 9. What this adds up to
 
-1. **On naming the agent, nothing beats the simple guesses.** No score field's
-   interval excludes the best simple guess on either corpus. §3 is why: that
-   column largely rewards picking an early or busy position, which the content-
-   free guesses do by construction.
-2. **On naming the step, the judge's probability does carry signal** — it beats
-   every simple guess and the random-step control on algorithm-generated logs.
-3. **One published method beats it on that column** — step-by-step, 0.294
-   against 0.190, with the same judge on the same logs. That gap is about
-   method, not about the metric, and it is the one result with no positional
-   explanation.
-4. **The registered rule rarely fires on the short logs** — it gives up and
-   falls back to the lowest-scoring step in about three quarters of
-   algorithm-generated logs, because the best split keeps landing on an edge of
-   a log averaging under nine steps.
-5. **The lookahead shift is a dead end.** It cannot rank the faulty step above
-   its neighbours anywhere (every interval spans chance), and on hand-crafted
-   logs it points the wrong way: seeing what came next makes the judge *more*
-   confident in the step that was actually wrong. Adding a step's consequence
-   was worth testing and did not work.
-6. **Three guesses helps on the step, modestly** — roughly +0.08 to +0.15 over
-   a matched random-three control on algorithm-generated logs. The advantage
-   sits at the very top of the ranking and thins out as the list grows. On the
-   agent, three guesses is at or below chance.
+1. **External P(True) does find the labelled step, weakly.** Within-trajectory
+   AUROC ≈ 0.57–0.62, interval above chance on both corpora and in both answer
+   settings, with the judge measurably less confident on the labelled step than
+   on the rest of the trajectory. This is the result; everything else is a
+   consequence of it.
+2. **A 0.58 AUROC does not survive being forced into one pick.** On logs
+   averaging under nine steps it becomes roughly 19% exact-step accuracy. The
+   gap between §2 and §3 is arithmetic, not a second finding, and no rule in §3
+   recovers it.
+3. **Naming the agent tests something else.** That column largely rewards
+   picking an early or busy position, which the content-free guesses do by
+   construction — see §4. Rankings taken from it are not attribution skill.
+4. **One published method still beats the rule layer on the step column** —
+   step-by-step, 0.294 against 0.190, same judge, same logs. That gap is about
+   method and has no positional explanation.
+5. **The registered rule rarely fires on short logs** — it falls back to the
+   lowest-scoring step in about three quarters of algorithm-generated logs,
+   because the best split keeps landing on a trajectory edge.
+6. **The lookahead shift is a dead end.** It cannot rank the labelled step
+   anywhere (every interval spans chance) and points the wrong way on
+   hand-crafted logs.
 
 ## 9. Limits
 
