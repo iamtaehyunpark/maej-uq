@@ -143,10 +143,14 @@ class HFClient(JudgeClient):
         return out
 
     def reset(self, prefix: str) -> None:
+        # ``preamble`` no longer carries SYSTEM — the served path delivers it as
+        # a chat message. This client has no chat template, so it prepends it.
+        from .prompts import SYSTEM
+
         self._cache = None
         self._prefix_len = 0
         if prefix:
-            self.extend(prefix)
+            self.extend(SYSTEM + "\n" + prefix)
 
     def extend(self, text: str) -> None:
         if not text:
@@ -269,7 +273,11 @@ class ServedClient(JudgeClient):
         require_prefix_caching: bool = True,
         max_retries: int = 9,
         retry_backoff: float = 5.0,
+        system: str | None = None,
     ) -> None:
+        from .prompts import SYSTEM
+
+        self.system = system if system is not None else SYSTEM
         self.name = f"served:{model}"
         self.model = model
         self.base_url = base_url.rstrip("/")
@@ -348,84 +356,82 @@ class ServedClient(JudgeClient):
 
     # -- readouts ----------------------------------------------------------
 
+    def _chat_body(self, readout: str, **overrides) -> dict:
+        """Chat request carrying the shared prefix as the user turn.
+
+        The judge is an instruct model: sending raw text to ``/completions``
+        skips its chat template entirely and leaves it outside the format it was
+        trained in, which is what pushed the answer tokens out of the head of
+        the distribution. Reasoning is disabled through the template's own
+        ``enable_thinking`` switch rather than by prefilling a literal
+        ``<think></think>`` into the prompt.
+        """
+        body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": self.system},
+                {"role": "user", "content": self._prefix + readout},
+            ],
+            "temperature": 0.0,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        body.update(overrides)
+        return body
+
     def p_true(self, readout: str) -> tuple[float, Trace]:
         t0 = time.perf_counter()
-        prompt = self._prefix + readout
         body = self._post(
-            "/completions",
-            {
-                "model": self.model,
-                "prompt": prompt,
-                "max_tokens": 1,
-                "temperature": 0.0,
-                "logprobs": self.top_logprobs,
-            },
+            "/chat/completions",
+            self._chat_body(readout, max_tokens=1, logprobs=True,
+                            top_logprobs=self.top_logprobs),
         )
         self.n_calls += 1
         choice = body["choices"][0]
-        top = (choice.get("logprobs") or {}).get("top_logprobs") or [{}]
-        lt, lf = _readout_logprobs(top[0] if top else {})
-        used_echo = False
-        if lt is None or lf is None:
+        content = (choice.get("logprobs") or {}).get("content") or []
+        top = content[0].get("top_logprobs", []) if content else []
+
+        # Sum probability over every spelling of each answer. Taking the max
+        # would discard mass whenever the tokenizer splits "True" and " True".
+        p_t = p_f = 0.0
+        for item in top:
+            word = str(item.get("token", "")).strip().lower()
+            pr = math.exp(float(item.get("logprob", -100.0)))
+            if word == "true":
+                p_t += pr
+            elif word == "false":
+                p_f += pr
+
+        answered = p_t + p_f
+        if answered <= 0.0:
+            # The model put nothing on either answer. Recording it as 0.5 with
+            # the mass alongside keeps the row visible; inventing a ratio out of
+            # two absent tokens would not.
             self.n_topk_miss += 1
-            used_echo = True
-            lt = self._forced_logprob(prompt, " True") if lt is None else lt
-            lf = self._forced_logprob(prompt, " False") if lf is None else lf
-        m = max(lt, lf)
-        p = math.exp(lt - m) / (math.exp(lt - m) + math.exp(lf - m))
+            p = 0.5
+        else:
+            p = p_t / answered
         usage = body.get("usage") or {}
         return p, Trace(
             prefix_tokens=int(usage.get("prompt_tokens", 0)),
             readout_tokens=int(usage.get("completion_tokens", 0)),
             seconds=time.perf_counter() - t0,
-            extra={"logp_true": lt, "logp_false": lf, "echo_fallback": used_echo},
-        )
-
-    def _forced_logprob(self, prompt: str, continuation: str) -> float:
-        """Logprob of a forced continuation, via ``echo`` — exact, no top-k."""
-        body = self._post(
-            "/completions",
-            {
-                "model": self.model,
-                "prompt": prompt + continuation,
-                "max_tokens": 0,
-                "temperature": 0.0,
-                "logprobs": 0,
-                "echo": True,
+            extra={
+                "p_true_mass": p_t,
+                "p_false_mass": p_f,
+                "mass_on_answer": answered,
+                "top_token": str(top[0].get("token", "")) if top else "",
             },
         )
-        lps = ((body["choices"][0].get("logprobs") or {}).get("token_logprobs")) or []
-        tail = [v for v in lps if v is not None]
-        return float(tail[-1]) if tail else -30.0
 
     def generate(self, readout: str, *, max_new_tokens: int = 12) -> tuple[str, Trace]:
         t0 = time.perf_counter()
         body = self._post(
-            "/completions",
-            {
-                "model": self.model,
-                "prompt": self._prefix + readout,
-                "max_tokens": max_new_tokens,
-                "temperature": 0.0,
-            },
+            "/chat/completions", self._chat_body(readout, max_tokens=max_new_tokens)
         )
         self.n_calls += 1
         usage = body.get("usage") or {}
-        return body["choices"][0]["text"], Trace(
+        return body["choices"][0]["message"]["content"], Trace(
             prefix_tokens=int(usage.get("prompt_tokens", 0)),
             readout_tokens=int(usage.get("completion_tokens", 0)),
             seconds=time.perf_counter() - t0,
         )
-
-
-def _readout_logprobs(top: dict) -> tuple[float | None, float | None]:
-    """Pick True/False logprobs out of a top-k map, tolerating spelling."""
-    true_lp: float | None = None
-    false_lp: float | None = None
-    for tok, lp in (top or {}).items():
-        word = str(tok).strip().lower()
-        if word == "true":
-            true_lp = max(true_lp, float(lp)) if true_lp is not None else float(lp)
-        elif word == "false":
-            false_lp = max(false_lp, float(lp)) if false_lp is not None else float(lp)
-    return true_lp, false_lp

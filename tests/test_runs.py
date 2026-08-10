@@ -631,11 +631,35 @@ def test_roles_resolve_per_transport():
     assert resolve_model("mock", "served") == "mock"
 
 
-def test_served_client_reads_true_false_out_of_topk():
-    from masattr.judge.client import _readout_logprobs
+def test_served_client_sums_answer_mass_and_disables_thinking():
+    """P(True) must renormalise over summed spellings, and the request must
+    carry the template's own thinking switch rather than a prompt hack."""
+    from masattr.judge.client import ServedClient
 
-    assert _readout_logprobs({" True": -0.1, " False": -2.3}) == (-0.1, -2.3)
-    assert _readout_logprobs({"true": -0.5, "FALSE": -1.5}) == (-0.5, -1.5)
-    # Neither present: the caller must fall back, not read it as False.
-    assert _readout_logprobs({"Yes": -0.2, "No": -1.0}) == (None, None)
-    assert _readout_logprobs({}) == (None, None)
+    c = ServedClient.__new__(ServedClient)
+    c.model, c.system, c.top_logprobs = "m", "sys", 20
+    c._prefix, c.n_calls, c.n_topk_miss = "PREFIX", 0, 0
+
+    body = c._chat_body("READOUT", max_tokens=1)
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert body["messages"][0] == {"role": "system", "content": "sys"}
+    assert body["messages"][1]["content"] == "PREFIXREADOUT"
+    assert "<think>" not in body["messages"][1]["content"]
+
+    import math
+
+    def fake_post(path, payload):
+        assert path == "/chat/completions"
+        lp = lambda t, p: {"token": t, "logprob": math.log(p)}
+        return {
+            "choices": [{"logprobs": {"content": [{"top_logprobs": [
+                lp("True", 0.30), lp(" True", 0.30), lp("False", 0.20), lp("x", 0.20),
+            ]}]}}],
+            "usage": {},
+        }
+
+    c._post = fake_post
+    p, tr = c.p_true("READOUT")
+    # 0.6 true vs 0.2 false -> 0.75, not the 0.6 a max() over spellings gives
+    assert abs(p - 0.75) < 1e-9
+    assert abs(tr.extra["mass_on_answer"] - 0.8) < 1e-9
