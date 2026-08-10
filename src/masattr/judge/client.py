@@ -267,7 +267,7 @@ class ServedClient(JudgeClient):
         top_logprobs: int = 20,
         timeout: float = 600.0,
         require_prefix_caching: bool = True,
-        max_retries: int = 5,
+        max_retries: int = 9,
         retry_backoff: float = 5.0,
     ) -> None:
         self.name = f"served:{model}"
@@ -316,7 +316,10 @@ class ServedClient(JudgeClient):
                 last = e
                 self.n_retries += 1
                 if attempt < self.max_retries:
-                    time.sleep(self.retry_backoff * (2**attempt))
+                    # Capped exponential backoff. The total budget has to exceed
+                    # a server restart — the model takes minutes to load — or a
+                    # deliberate restart silently kills every running job.
+                    time.sleep(min(self.retry_backoff * (2**attempt), 120.0))
         raise RuntimeError(
             f"{self.base_url}{path} failed after {self.max_retries} retries: {last}"
         )
