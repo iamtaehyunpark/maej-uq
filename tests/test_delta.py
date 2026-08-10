@@ -85,3 +85,29 @@ def test_step_level_auroc_rewards_a_drop_at_the_gold_step():
 def test_auroc_splits_ties_in_half():
     assert _auroc([1.0], [1.0]) == 0.5
     assert _auroc([], [1.0]) is None
+
+
+def test_risk_coverage_counts_only_correct_selections():
+    """A curve that reads 1.000 at full coverage while most picks are wrong is
+    counting rows, not hits — the bug this guards was exactly that."""
+    from masattr.runs.delta_field import file_level
+
+    class _Rec:
+        def __init__(self, key, step, agent):
+            self.key, self.label_mistake_step, self.label_mistake_agent = key, step, agent
+
+    grouped, records = {}, []
+    for i in range(4):
+        key = f"hc/f{i}"
+        # step 1 always wins argmin; only file 0 has gold at step 1
+        grouped[key] = [
+            _s(0, 0.0, look="resp", key=key),
+            _s(1, -0.5 - i, look="resp", key=key),
+        ]
+        for r in grouped[key]:
+            r.p_norm = r.p_raw
+        records.append(_Rec(key, 1 if i == 0 else 0, "A"))
+
+    out = file_level(grouped, records, "argmin", {})
+    assert out["n_selected"] == 4 and out["n_correct"] == 1
+    assert out["risk_coverage"][-1]["accuracy"] == 0.25

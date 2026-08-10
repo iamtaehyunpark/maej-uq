@@ -130,7 +130,7 @@ def file_level(grouped: dict, records, method: str, per_file_thr: dict) -> dict:
             {
                 "coverage": round(k / len(coverage), 3) if coverage else None,
                 "n": k,
-                "accuracy": round(sum(1 for _, ok in kept) / k, 4),
+                "accuracy": round(sum(1 for _, ok in kept if ok) / k, 4),
             }
         )
     return {
