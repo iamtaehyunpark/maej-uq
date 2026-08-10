@@ -57,6 +57,71 @@ The two least-confident steps.
 
 ---
 
+## Attribution rules on the same field
+
+The two tables above use no rule: top-1 is simply the lowest-scoring step. The
+harness also carries a set of registered attribution rules, which read the score
+field after it has been put on a common scale by leave-one-file-out
+normalization. Those are reported here on the corrected field, so the rule layer
+and the readout are no longer confounded.
+
+**Answer hidden**
+
+| rule | step, alg-generated | agent, alg-generated | step, hand-crafted | agent, hand-crafted |
+|---|---|---|---|---|
+| two-regime split (registered) | 0.238 | 0.421 | 0.121 | 0.466 |
+| **first step below threshold** | **0.325** | 0.460 | 0.103 | 0.293 |
+| lowest-scoring step | 0.246 | 0.437 | 0.121 | 0.414 |
+| two-regime split, unscaled | 0.111 | 0.286 | 0.086 | 0.328 |
+| first step of the worst-scoring agent | 0.183 | 0.286 | 0.172 | 0.328 |
+| relative drop 1.5x | 0.262 | 0.437 | 0.103 | 0.414 |
+| relative drop 2x | 0.246 | 0.437 | 0.121 | 0.397 |
+| relative drop 2.5x | 0.246 | 0.437 | 0.121 | 0.414 |
+
+**Answer shown**
+
+| rule | step, alg-generated | agent, alg-generated | step, hand-crafted | agent, hand-crafted |
+|---|---|---|---|---|
+| two-regime split (registered) | 0.190 | 0.405 | 0.138 | 0.466 |
+| **first step below threshold** | **0.325** | 0.460 | **0.224** | **0.569** |
+| lowest-scoring step | 0.230 | 0.437 | 0.121 | 0.431 |
+| two-regime split, unscaled | 0.127 | 0.278 | 0.086 | 0.276 |
+| first step of the worst-scoring agent | 0.246 | 0.317 | 0.172 | 0.379 |
+| relative drop 1.5x | 0.238 | 0.429 | 0.086 | 0.397 |
+| relative drop 2x | 0.230 | 0.437 | 0.103 | 0.431 |
+| relative drop 2.5x | 0.230 | 0.437 | 0.121 | 0.431 |
+
+Rate at which the registered rule found no usable split and fell back to the
+lowest-scoring step: 65.9% / 10.3% (answer hidden, alg / hand-crafted) and
+54.8% / 8.6% (answer shown). Both are lower than on the old field, where the
+same rule fell back on 74.6% of algorithm-generated logs.
+
+**First-step-below-threshold is now the best rule**, at 0.325 step accuracy on
+algorithm-generated logs in both settings, against 0.238 / 0.190 for the
+registered primary and 0.246 for the lowest-scoring step. On the earlier,
+broken field this rule scored 0.159 / 0.254 and the ordering between rules was
+unstable. A cleaner score field is what made a threshold-crossing rule viable —
+the threshold now sits in a distribution the judge actually produced.
+
+The registered rule is not the winner. It was fixed in advance, before any of
+these numbers existed, and swapping it now on the strength of the table would
+be exactly the selection effect that registering it was meant to prevent.
+
+**It also removes the backwards answer-shown effect — for that rule only.**
+Under first-step-below-threshold, showing the reference answer ties on
+algorithm-generated (0.325 both ways) and clearly helps hand-crafted (step
+0.103 to 0.224, agent 0.293 to 0.569). The degradation noted above is specific
+to lowest-scoring-step selection, not a property of the field.
+
+**One number does not carry across.** The lowest-scoring step reads 0.246 here
+against 0.262 in the top-1 table, on identical data. The difference is
+normalization: the rule path z-scores per step type using leave-one-file-out
+statistics before ranking, while the top-1 table ranks raw P(True). Per-type
+normalization costs about two logs on this field. The two are not
+interchangeable and should not be quoted as though they were.
+
+---
+
 ## Reading the tables
 
 **On algorithm-generated logs, P(True) locates the step better than anything
