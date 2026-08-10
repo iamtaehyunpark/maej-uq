@@ -39,7 +39,18 @@ RULE = {
     "first_crossing": "first step below threshold",
     "argmin": "lowest-scoring step",
     "relative_crossing@2.0": "relative drop (2x)",
+    "changepoint": "two-regime split, unscaled",
+    "agent_first": "first step of the worst-scoring agent",
+    "relative_crossing@1.5": "relative drop (1.5x)",
+    "relative_crossing@2.5": "relative drop (2.5x)",
 }
+
+#: Every rule implemented, for the full sweep on the reference field.
+RULES_ALL = (
+    "changepoint_single", "first_crossing", "argmin", "changepoint",
+    "agent_first", "relative_crossing@1.5", "relative_crossing@2.0",
+    "relative_crossing@2.5",
+)
 
 SUBSET = {"alg": "algorithm-generated", "hc": "hand-crafted"}
 ANS = {"off": "hidden", "on": "shown", "nogt": "hidden", "gt": "shown"}
@@ -138,6 +149,48 @@ def master(root: Path) -> list[str]:
                 + (f"{sc['step_acc']:.3f} [{s['lo']:.3f},{s['hi']:.3f}]" if sc else "—")
                 + " | — |"
             )
+    return out
+
+
+def all_rules(root: Path) -> list[str]:
+    """Full rule sweep on the reference field, including the demoted variants."""
+    out = [
+        "",
+        "### Every rule tried, on the judge-probability field",
+        "",
+        "The main table shows four rules for every field. All eight are listed "
+        "here for the reference field only. The registered rule was fixed in "
+        "advance, before any of these numbers existed — that it is not the "
+        "winner is a result, not a reason to swap it.",
+        "",
+    ]
+    for gt in ("nogt", "gt"):
+        res = load(root / f"main/e1_{gt}/results.json")
+        if not res:
+            continue
+        by = {E1._subset(l): c for l, c in res["configs"].items()}
+        out += [
+            f"**Reference answer {ANS[gt]}**",
+            "",
+            "| rule | agent, alg-generated | step, alg-generated | agent, hand-crafted | step, hand-crafted |",
+            "|---|---|---|---|---|",
+        ]
+        for rule in RULES_ALL:
+            cells = []
+            for subset in ("alg", "hc"):
+                sc = (by.get(subset, {}).get("scores", {}).get(rule) or {}).get("exact/all")
+                if not sc:
+                    cells += ["—", "—"]
+                    continue
+                a, st_ = sc["agent_ci"], sc["step_ci"]
+                cells += [
+                    f"{sc['agent_acc']:.3f} [{a['lo']:.3f},{a['hi']:.3f}]",
+                    f"{sc['step_acc']:.3f} [{st_['lo']:.3f},{st_['hi']:.3f}]",
+                ]
+            if all(c == "—" for c in cells):
+                continue
+            out.append(f"| {RULE.get(rule, rule)} | " + " | ".join(cells) + " |")
+        out.append("")
     return out
 
 
@@ -557,6 +610,7 @@ def main(argv: list[str]) -> int:
     meta = E1.corpus(Path(argv[2] if len(argv) > 2 else "data"))
     lines = [HEADER]
     lines += master(root)
+    lines += all_rules(root)
     lines += position(root, meta)
     lines += guesses(root, meta)
     lines += base_rate(root, meta)
