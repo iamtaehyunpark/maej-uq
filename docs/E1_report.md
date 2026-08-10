@@ -1,5 +1,12 @@
 # E0 + E1 results
 
+> **Superseded.** This report was written against prompts hash
+> `1842b6d031e65362`, before the `NO_THINK` readout scaffold was added. Every
+> judged number in it predates that change and must not be reused. The current
+> figures — including a re-run of this exact reference row — are in
+> [`pilot_baseline_report.md`](pilot_baseline_report.md), on prompts hash
+> `e8bc3b7bb8f22151`. Kept for the run history only.
+
 **2026-08-07 · Who&When, 184 files · judge `Qwen/Qwen3.6-35B-A3B` (vLLM 0.23, served, prefix caching on)**
 
 Run provenance: commit `dac39d53d3e7`, rule directive hash `cdcb43b542297e70`,
