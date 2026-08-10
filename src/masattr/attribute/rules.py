@@ -294,10 +294,25 @@ THRESHOLD_FREE = ("changepoint_single", "argmin", "changepoint", "relative_cross
 #: Fixed by ``specs/rule_directive.md``, not by any experiment's outcome.
 PRIMARY = "changepoint_single"
 
+#: Withdrawn from the reported ablation. ``agent_first`` selects the agent whose
+#: *best* step is still worst, which systematically elects whoever contributed
+#: fewest steps — one confident step is enough to clear an agent. Measured on the
+#: corrected P(True) field it is the weakest of eight agent selectors on
+#: algorithm-generated logs (0.294 agent accuracy against 0.484 for the best),
+#: and loses to at least one other rule in every cell but one: hand-crafted step
+#: accuracy with the answer hidden, 0.172 against 0.121, a margin of about three
+#: logs on the noisiest subset. It stays implemented and callable by name; it is
+#: no longer reported.
+WITHDRAWN = ("agent_first",)
+
+
 #: E3's rows: everything that is not the primary rule, with the relative-crossing
 #: sensitivity sweep expanded.
 def ablation_methods() -> list[str]:
-    rows = [m for m in METHODS if m not in (PRIMARY, "relative_crossing")]
+    rows = [
+        m for m in METHODS
+        if m not in (PRIMARY, "relative_crossing") and m not in WITHDRAWN
+    ]
     return rows + [f"relative_crossing@{k}" for k in RELATIVE_K_SWEEP]
 
 

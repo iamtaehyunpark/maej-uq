@@ -164,7 +164,12 @@ def test_primary_is_fixed_by_directive():
     assert PRIMARY == "changepoint_single"
     # Every demoted rule is an ablation row, and the k sweep lives only there.
     rows = ablation_methods()
-    assert {"first_crossing", "argmin", "changepoint", "agent_first"} <= set(rows)
+    assert {"first_crossing", "argmin", "changepoint"} <= set(rows)
+    # Withdrawn rules stay callable but must not appear as reported rows.
+    from masattr.attribute.rules import WITHDRAWN
+
+    assert "agent_first" in WITHDRAWN
+    assert not set(WITHDRAWN) & set(rows)
     assert [r for r in rows if r.startswith("relative_crossing@")] == [
         "relative_crossing@1.5",
         "relative_crossing@2.0",

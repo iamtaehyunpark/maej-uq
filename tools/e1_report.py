@@ -37,7 +37,6 @@ RULES = (
     "first_crossing",
     "argmin",
     "changepoint",
-    "agent_first",
     "relative_crossing@1.5",
     "relative_crossing@2.0",
     "relative_crossing@2.5",
@@ -355,8 +354,9 @@ def header(root: Path) -> list[str]:
         "readout scaffold changed and had to be superseded.",
         "",
         "The B0 reference row of the pilot suite, reported in full: all eight rules "
-        "(the four in the master table plus `changepoint`, `agent_first`, and the "
-        "`relative_crossing` k-sweep), both GT settings, every pre-registered slice.",
+        "(the four in the master table plus `changepoint` and the "
+        "`relative_crossing` k-sweep), both GT settings, every pre-registered slice. "
+        "`agent_first` is withdrawn — see `rules.WITHDRAWN`.",
         "",
         f"Run provenance: commit `{m.get('commit', '—')}`, rule directive hash "
         f"`{h.get('rule_directive', '—')}`, prompts `{h.get('prompts', '—')}`, "

@@ -40,7 +40,6 @@ RULE = {
     "argmin": "lowest-scoring step",
     "relative_crossing@2.0": "relative drop (2x)",
     "changepoint": "two-regime split, unscaled",
-    "agent_first": "first step of the worst-scoring agent",
     "relative_crossing@1.5": "relative drop (1.5x)",
     "relative_crossing@2.5": "relative drop (2.5x)",
 }
@@ -48,8 +47,7 @@ RULE = {
 #: Every rule implemented, for the full sweep on the reference field.
 RULES_ALL = (
     "changepoint_single", "first_crossing", "argmin", "changepoint",
-    "agent_first", "relative_crossing@1.5", "relative_crossing@2.0",
-    "relative_crossing@2.5",
+    "relative_crossing@1.5", "relative_crossing@2.0", "relative_crossing@2.5",
 )
 
 SUBSET = {"alg": "algorithm-generated", "hc": "hand-crafted"}

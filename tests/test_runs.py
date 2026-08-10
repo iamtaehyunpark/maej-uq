@@ -112,7 +112,6 @@ def test_e1_primary_table(data_root, tmp_path, capsys):
         "first_crossing",
         "argmin",
         "changepoint",
-        "agent_first",
         "relative_crossing@1.5",
         "relative_crossing@2.0",
         "relative_crossing@2.5",
