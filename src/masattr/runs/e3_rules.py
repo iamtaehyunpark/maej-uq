@@ -3,7 +3,7 @@
 The primary rule, ``changepoint_single``, against every demoted alternative over
 the same field: ``argmin``; ``first_crossing`` on the leave-one-out threshold;
 ``changepoint`` (the same split chosen by an unnormalised mean gap, which
-ablates the contrast statistic); ``agent_first``; and ``relative_crossing`` at
+ablates the contrast statistic); and ``relative_crossing`` at
 k ∈ {1.5, 2, 2.5}.
 
 The k sweep is here and only here. ``RELATIVE_K`` is deliberately unregistered:

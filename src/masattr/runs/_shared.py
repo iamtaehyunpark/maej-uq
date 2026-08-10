@@ -410,12 +410,20 @@ def run_config_tables(
             n_boot=args.n_boot,
             seed=args.seed,
         )
+        # Where the primary disagrees with the strongest reported alternative.
+        # This used to contrast against ``agent_first``; that rule is withdrawn
+        # (see ``rules.WITHDRAWN``), so the contrast follows the rule set rather
+        # than naming a row that is no longer computed.
+        contrast = next(
+            (m for m in ("first_crossing", "argmin") if m in preds and m != primary),
+            next((m for m in preds if m != primary), primary),
+        )
         dis_type = disagreement(
-            preds[primary], preds["agent_first"], strata=type_strata(scores, preds[primary])
+            preds[primary], preds[contrast], strata=type_strata(scores, preds[primary])
         )
         dis_role = (
             disagreement(
-                preds[primary], preds["agent_first"], strata=role_strata(preds[primary])
+                preds[primary], preds[contrast], strata=role_strata(preds[primary])
             )
             if subset == "hc"
             else []
