@@ -83,6 +83,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--device")
     p.add_argument("--limit", type=int, help="first N files per subset (smoke runs)")
+    p.add_argument(
+        "--reuse-output",
+        action="store_true",
+        help="re-score their existing result files without re-invoking their script",
+    )
     return p
 
 
@@ -119,7 +124,8 @@ def main(argv=None) -> int:
                 # Absolute: their script runs with cwd set to its own directory.
                 receipt = (Path(args.out_dir) / f"snapshot_{method}_{subset}.txt").resolve()
                 receipt.parent.mkdir(parents=True, exist_ok=True)
-                run_repo_subprocess(
+                if not args.reuse_output:
+                    run_repo_subprocess(
                     args.repo_path,
                     method=method,
                     model=args.repo_model,
@@ -130,13 +136,18 @@ def main(argv=None) -> int:
                     snapshot_receipt=receipt,
                     base_url=args.served_base_url,
                     model_rewrite=args.served_model,
-                    no_think=args.no_think,
-                    python_exe=args.repo_python,
-                    max_tokens=args.repo_max_tokens,
-                )
+                        no_think=args.no_think,
+                        python_exe=args.repo_python,
+                        max_tokens=args.repo_max_tokens,
+                    )
                 snapshots = (
                     sorted(set(receipt.read_text().split())) if receipt.exists() else []
                 )
+                if n_unparsed:
+                    manifest.note(
+                        f"{method}/{subset}: {n_unparsed}/{len(gold)} files had no "
+                        "parseable prediction; scored as misses"
+                    )
                 if snapshots:
                     manifest.note(
                         f"{method}/{subset}: API returned model snapshot(s) "
@@ -148,10 +159,16 @@ def main(argv=None) -> int:
                     model=args.repo_model,
                     is_handcrafted=(subset == "hc"),
                 )
-                preds = parse_repo_output(
+                parsed = parse_repo_output(
                     out_file.read_text(encoding="utf-8"), ids, subset
                 )
-                if not preds:
+                # Every gold file gets a row. A prediction their output does not
+                # carry — unparseable, or the model never answered — is a miss,
+                # not an excluded file: dropping those shrinks the denominator
+                # by exactly the cases the method failed on.
+                preds = {k: parsed.get(k, (None, None)) for k in gold}
+                n_unparsed = sum(1 for k in gold if k not in parsed)
+                if not parsed:
                     raise SystemExit(
                         f"parsed no predictions from {out_file}; their output format "
                         "may have changed — check it before trusting any row"
@@ -175,6 +192,8 @@ def main(argv=None) -> int:
                         "impl": "repo",
                         "n": len(preds),
                         "n_gold": len(gold),
+                        "n_unparsed": n_unparsed,
+                        "unparsed_rate": round(n_unparsed / max(len(gold), 1), 4),
                         "output_file": str(out_file),
                         "model_snapshots": snapshots,
                         "scores": scored,
