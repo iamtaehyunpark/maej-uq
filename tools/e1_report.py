@@ -188,9 +188,7 @@ def sec_fallback(root: Path, meta: dict) -> list[str]:
                     continue
                 n = rec.n_steps
                 b = "< 10" if n < 10 else "10–20" if n < 20 else "20–50" if n < 50 else "50+"
-                buckets.setdefault(b, []).append(
-                    1 if (p.get("extra") or {}).get("fallback") else 0
-                )
+                buckets.setdefault(b, []).append(1 if p.get("fallback") else 0)
         if any(buckets.values()):
             out += [
                 "",
