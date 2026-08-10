@@ -56,6 +56,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--served-model", help="model name to rewrite their calls to")
     p.add_argument(
+        "--no-think",
+        action="store_true",
+        help="disable the served model's reasoning scratchpad for their calls, "
+        "mirroring the suppression applied to our own readouts so both sides of "
+        "the capability control run under the same generation regime",
+    )
+    p.add_argument(
         "--repo-max-tokens",
         type=int,
         help="their --max_tokens. Their default (1024) is sized for a terse "
@@ -123,6 +130,7 @@ def main(argv=None) -> int:
                     snapshot_receipt=receipt,
                     base_url=args.served_base_url,
                     model_rewrite=args.served_model,
+                    no_think=args.no_think,
                     python_exe=args.repo_python,
                     max_tokens=args.repo_max_tokens,
                 )

@@ -231,6 +231,7 @@ def run_repo_subprocess(
     snapshot_receipt: str | Path | None = None,
     base_url: str | None = None,
     model_rewrite: str | None = None,
+    no_think: bool = False,
     python_exe: str | None = None,
     max_tokens: int | None = None,
     timeout: int = 60 * 60 * 6,
@@ -261,6 +262,8 @@ def run_repo_subprocess(
         env["MASATTR_OPENAI_BASE_URL"] = base_url
     if model_rewrite:
         env["MASATTR_MODEL_REWRITE"] = model_rewrite
+    if no_think:
+        env["MASATTR_NO_THINK"] = "1"
     proc = subprocess.run(
         cmd, cwd=script.parent, capture_output=True, text=True, timeout=timeout, env=env
     )
@@ -462,6 +465,14 @@ Three jobs, all env-driven so their file stays byte-identical:
    capability control: their prompts and logic, our model.
 3. MASATTR_MODEL_REWRITE replaces the model name on every call, because their
    CLI only accepts names from their own hard-coded list.
+4. MASATTR_NO_THINK disables the served model's reasoning scratchpad. The
+   judge is a reasoning model; against their prompts it emits thousands of
+   tokens of deliberation before answering, which made the arm ~30x slower and
+   truncated it before it reached the "Agent Name / Step Number" format their
+   own parser requires. Measured: 300+ tokens (still truncated) with thinking
+   on, 11 tokens and the correct format with it off. This mirrors the
+   scratchpad suppression applied to our own readouts, so both sides of the
+   capability control are compared under the same generation regime.
 
 It also records the concrete model string the API returns, so a drifted alias
 or an unexpected served model is visible afterwards.
@@ -477,6 +488,7 @@ _RealOpenAI = openai.OpenAI
 _receipt = os.environ.get("MASATTR_SNAPSHOT_RECEIPT")
 _base_url = os.environ.get("MASATTR_OPENAI_BASE_URL")
 _rewrite = os.environ.get("MASATTR_MODEL_REWRITE")
+_no_think = os.environ.get("MASATTR_NO_THINK")
 _seen = set()
 
 
@@ -501,6 +513,10 @@ class _Completions:
     def create(self, *a, **kw):
         if _rewrite:
             kw["model"] = _rewrite
+        if _no_think:
+            body = dict(kw.get("extra_body") or {})
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+            kw["extra_body"] = body
         resp = self._inner.create(*a, **kw)
         _record(getattr(resp, "model", None))
         return resp
