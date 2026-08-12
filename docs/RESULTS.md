@@ -28,10 +28,14 @@ The score fields compared here:
 | P(True) | the judge's probability that the step is correct, read from a single token |
 | verbalized confidence | the judge writes a confidence number instead |
 | binary verdict | the judge answers correct/incorrect |
-| embedding divergence | how far the step drifts from what came before — no judge involved |
-| NLI contradiction | an off-the-shelf model asking whether the step contradicts earlier ones |
 | P(True) shift, +response | how much P(True) *moves* once the reply to that step is appended |
 | P(True) shift, +response +next turn | the same, also appending that agent's own next turn |
+
+> **The two judge-free coherence fields have been removed from this report.**
+> As run they were invalid: step 0 was assigned a score that made it the most
+> suspect step in almost every trajectory, so the selection collapsed onto
+> step 0 in 92% of files. Corrected figures are in `PTRUE_RESULTS.md`; they are
+> below chance on both corpora.
 
 Against them, two kinds of reference point: **simple guesses** that ignore
 content entirely (always blame the first step, the last step, the busiest
@@ -55,10 +59,6 @@ The direct test, with no rule and no threshold in the way: within each trajector
 | verbalized confidence | hand-crafted | 55 | 0.483 [0.408, 0.556] | 0.672 | 0.648 |
 | binary verdict | algorithm-generated | 126 | 0.512 [0.473, 0.546] | 0.254 | 0.279 |
 | binary verdict | hand-crafted | 55 | 0.563 [0.496, 0.625] | 0.336 | 0.398 |
-| embedding divergence | algorithm-generated | 126 | 0.384 [0.327, 0.442] | 0.790 | 0.738 |
-| embedding divergence | hand-crafted | 55 | 0.536 [0.469, 0.603] | 0.775 | 0.784 |
-| NLI contradiction | algorithm-generated | 126 | 0.425 [0.366, 0.485] | 0.912 | 0.911 |
-| NLI contradiction | hand-crafted | 55 | **0.612 [0.524, 0.704]** | 0.655 | 0.876 |
 | P(True) shift, +response | algorithm-generated | 126 | 0.512 [0.455, 0.566] | -0.101 | -0.092 |
 | P(True) shift, +response | hand-crafted | 55 | 0.444 [0.362, 0.530] | 0.034 | -0.024 |
 | P(True) shift, +response +next turn | algorithm-generated | 126 | 0.484 [0.424, 0.544] | -0.114 | -0.111 |
@@ -138,22 +138,6 @@ How often each method names the faulty agent, and the faulty step, exactly. Conf
 | binary verdict | shown | hand-crafted | first step below threshold | 0.276 [0.155,0.397] | 0.052 [0.000,0.121] | 10.3% |
 | binary verdict | shown | hand-crafted | lowest-scoring step | 0.362 [0.241,0.483] | 0.052 [0.000,0.121] | 10.3% |
 | binary verdict | shown | hand-crafted | relative drop (2x) | 0.362 [0.241,0.483] | 0.052 [0.000,0.121] | 10.3% |
-| embedding divergence | hidden | algorithm-generated | two-regime split (registered) | 0.452 [0.365,0.540] | 0.135 [0.079,0.198] | 92.1% |
-| embedding divergence | hidden | algorithm-generated | first step below threshold | 0.492 [0.405,0.579] | 0.159 [0.095,0.222] | 92.1% |
-| embedding divergence | hidden | algorithm-generated | lowest-scoring step | 0.452 [0.365,0.540] | 0.151 [0.087,0.214] | 92.1% |
-| embedding divergence | hidden | algorithm-generated | relative drop (2x) | 0.452 [0.365,0.540] | 0.151 [0.087,0.214] | 92.1% |
-| embedding divergence | hidden | hand-crafted | two-regime split (registered) | 0.259 [0.155,0.379] | 0.000 [0.000,0.000] | 67.2% |
-| embedding divergence | hidden | hand-crafted | first step below threshold | 0.000 [0.000,0.000] | 0.000 [0.000,0.000] | 67.2% |
-| embedding divergence | hidden | hand-crafted | lowest-scoring step | 0.241 [0.138,0.362] | 0.000 [0.000,0.000] | 67.2% |
-| embedding divergence | hidden | hand-crafted | relative drop (2x) | 0.207 [0.103,0.310] | 0.000 [0.000,0.000] | 67.2% |
-| NLI contradiction | hidden | algorithm-generated | two-regime split (registered) | 0.413 [0.325,0.500] | 0.119 [0.063,0.175] | 97.6% |
-| NLI contradiction | hidden | algorithm-generated | first step below threshold | 0.492 [0.405,0.579] | 0.159 [0.095,0.222] | 97.6% |
-| NLI contradiction | hidden | algorithm-generated | lowest-scoring step | 0.413 [0.325,0.500] | 0.119 [0.063,0.175] | 97.6% |
-| NLI contradiction | hidden | algorithm-generated | relative drop (2x) | 0.413 [0.325,0.500] | 0.119 [0.063,0.175] | 97.6% |
-| NLI contradiction | hidden | hand-crafted | two-regime split (registered) | 0.414 [0.293,0.552] | 0.034 [0.000,0.086] | 65.5% |
-| NLI contradiction | hidden | hand-crafted | first step below threshold | 0.328 [0.207,0.448] | 0.034 [0.000,0.086] | 65.5% |
-| NLI contradiction | hidden | hand-crafted | lowest-scoring step | 0.414 [0.293,0.552] | 0.052 [0.000,0.121] | 65.5% |
-| NLI contradiction | hidden | hand-crafted | relative drop (2x) | 0.483 [0.345,0.621] | 0.086 [0.017,0.172] | 65.5% |
 | P(True) shift, +response | hidden | algorithm-generated | two-regime split (registered) | 0.381 [0.294,0.468] | 0.159 [0.095,0.230] | 64.3% |
 | P(True) shift, +response | hidden | algorithm-generated | first step below threshold | 0.516 [0.429,0.603] | 0.198 [0.127,0.270] | 64.3% |
 | P(True) shift, +response | hidden | algorithm-generated | lowest-scoring step | 0.365 [0.278,0.444] | 0.135 [0.079,0.198] | 64.3% |
@@ -263,10 +247,6 @@ Two different ways of being lenient. **Near-miss** accepts a pick that lands wit
 | verbalized confidence | hand-crafted | 55 | 0.036 | 0.073 [0.018,0.145] | 0.116 | -0.043 | 0.164 |
 | binary verdict | algorithm-generated | 126 | 0.151 | 0.508 [0.421,0.595] | 0.360 | +0.148 | 0.746 |
 | binary verdict | hand-crafted | 55 | 0.091 | 0.145 [0.055,0.236] | 0.116 | +0.030 | 0.182 |
-| embedding divergence | algorithm-generated | 126 | 0.151 | 0.206 [0.135,0.278] | 0.360 | -0.154 | 0.405 |
-| embedding divergence | hand-crafted | 55 | 0.000 | 0.036 [0.000,0.091] | 0.116 | -0.079 | 0.127 |
-| NLI contradiction | algorithm-generated | 126 | 0.119 | 0.270 [0.198,0.349] | 0.360 | -0.090 | 0.468 |
-| NLI contradiction | hand-crafted | 55 | 0.055 | 0.109 [0.036,0.200] | 0.116 | -0.007 | 0.255 |
 | P(True) shift, +response | algorithm-generated | 126 | 0.135 | 0.365 [0.278,0.452] | 0.360 | +0.005 | 0.587 |
 | P(True) shift, +response | hand-crafted | 55 | 0.055 | 0.091 [0.018,0.182] | 0.116 | -0.025 | 0.127 |
 | P(True) shift, +response +next turn | algorithm-generated | 126 | 0.167 | 0.333 [0.254,0.421] | 0.360 | -0.027 | 0.563 |
@@ -286,10 +266,6 @@ Two different ways of being lenient. **Near-miss** accepts a pick that lands wit
 | verbalized confidence | hand-crafted | 55 | 0.345 | 0.418 | 0.636 | -0.218 | 1.22 |
 | binary verdict | algorithm-generated | 126 | 0.444 | 0.762 | 0.703 | +0.059 | 2.43 |
 | binary verdict | hand-crafted | 55 | 0.400 | 0.491 | 0.636 | -0.145 | 1.18 |
-| embedding divergence | algorithm-generated | 126 | 0.452 | 0.643 | 0.703 | -0.060 | 2.29 |
-| embedding divergence | hand-crafted | 55 | 0.255 | 0.364 | 0.636 | -0.272 | 1.71 |
-| NLI contradiction | algorithm-generated | 126 | 0.413 | 0.690 | 0.703 | -0.013 | 2.29 |
-| NLI contradiction | hand-crafted | 55 | 0.418 | 0.655 | 0.636 | +0.019 | 1.60 |
 | P(True) shift, +response | algorithm-generated | 126 | 0.365 | 0.675 | 0.703 | -0.029 | 2.25 |
 | P(True) shift, +response | hand-crafted | 55 | 0.382 | 0.527 | 0.636 | -0.109 | 1.51 |
 | P(True) shift, +response +next turn | algorithm-generated | 126 | 0.421 | 0.683 | 0.703 | -0.021 | 2.23 |
@@ -327,10 +303,6 @@ Two different ways of being lenient. **Near-miss** accepts a pick that lands wit
 | verbalized confidence | hand-crafted | 2,993 | 0.9993 |
 | binary verdict | algorithm-generated | 1,099 | 1.0000 |
 | binary verdict | hand-crafted | 2,993 | 0.9940 |
-| embedding divergence | algorithm-generated | 1,099 | 0.8854 |
-| embedding divergence | hand-crafted | 2,993 | 0.9806 |
-| NLI contradiction | algorithm-generated | 1,099 | 0.8854 |
-| NLI contradiction | hand-crafted | 2,993 | 0.9806 |
 | P(True) shift, +response | algorithm-generated | 1,099 | 1.0000 |
 | P(True) shift, +response | hand-crafted | 2,993 | 1.0000 |
 | P(True) shift, +response +next turn | algorithm-generated | 1,099 | 1.0000 |
