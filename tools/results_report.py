@@ -60,8 +60,6 @@ BLOCKS = (
      {"off": "base/b3/e1_verbalized_nogt", "on": "base/b3/e1_verbalized_gt"}),
     ("binary verdict",
      {"off": "base/b3/e1_binary_nogt", "on": "base/b3/e1_binary_gt"}),
-    ("embedding divergence", {"off": "base/b4/e1_embed_divergence_nogt"}),
-    ("NLI contradiction", {"off": "base/b4/e1_nli_contradiction_nogt"}),
     ("P(True) shift, +response", {"off": "delta/e1_resp"}),
     ("P(True) shift, +response +next turn", {"off": "delta/e1_own"}),
 )
@@ -72,8 +70,6 @@ FIELD_NAME = {
     "B0 ptrue gt": "P(True), answer shown",
     "B3 verbalized nogt": "verbalized confidence",
     "B3 binary nogt": "binary verdict",
-    "B4 embed_divergence": "embedding divergence",
-    "B4 nli_contradiction": "NLI contradiction",
     "D1 delta_resp (C5−C3)": "P(True) shift, +response",
     "D1 delta_own (C6−C3)": "P(True) shift, +response +next turn",
 }
@@ -644,10 +640,14 @@ The score fields compared here:
 | P(True) | the judge's probability that the step is correct, read from a single token |
 | verbalized confidence | the judge writes a confidence number instead |
 | binary verdict | the judge answers correct/incorrect |
-| embedding divergence | how far the step drifts from what came before — no judge involved |
-| NLI contradiction | an off-the-shelf model asking whether the step contradicts earlier ones |
 | P(True) shift, +response | how much P(True) *moves* once the reply to that step is appended |
 | P(True) shift, +response +next turn | the same, also appending that agent's own next turn |
+
+> **The two judge-free coherence fields have been removed from this report.**
+> As run they were invalid: step 0 was assigned a score that made it the most
+> suspect step in almost every trajectory, so the selection collapsed onto
+> step 0 in 92% of files. Corrected figures are in `PTRUE_RESULTS.md`; they are
+> below chance on both corpora.
 
 Against them, two kinds of reference point: **simple guesses** that ignore
 content entirely (always blame the first step, the last step, the busiest
