@@ -187,6 +187,76 @@ selector is sensitive to, not as a registered result.
 
 ---
 
+## Judge-free coherence baselines, recomputed
+
+Two fields computed without any judge, as a control on whether the judge's
+contribution survives a purely semantic comparison. **Embedding divergence** is
+the cosine distance between a step and the centroid of everything before it;
+**NLI contradiction** is an off-the-shelf entailment model asked whether the step
+contradicts the preceding few. Both are converted so that a lower score means
+more suspect, and both are ranked exactly like P(True) — lowest first, top-1 and
+top-2, no rules.
+
+The pilot's versions of these two fields were invalid and their numbers should
+not be reused. Two defects, both fixed here:
+
+1. **Step 0 was given a "neutral" score of 0.5.** It has no prefix, so no score
+   is meaningful — but 0.5 sits near the *bottom* of both fields' real
+   distributions (only 1.0% of algorithm-generated embedding scores fall below
+   it), which made step 0 the most suspect step in almost every trajectory. The
+   selection then landed on step 0 in 92% of files, and since step 0 is the
+   labelled step in 16% of them, the field scored like a constant
+   "blame-the-first-step" predictor. Step 0 is now excluded from the candidate
+   set rather than given a value.
+2. **The NLI premise was truncated from the wrong end.** Five prefix steps come
+   to ~2,000 tokens against a 512-token limit, and the default strategy trims
+   the tail — so only the *oldest* step survived and the step immediately before
+   the one being judged was discarded. The premise now keeps its tail; verified
+   directly, the old tokenizer retained a marker placed at the start of the
+   window and the new one retains a marker placed at its end.
+
+### Embedding divergence
+
+| corpus | files | step top-1 | step top-2 | agent top-1 | agent top-2 |
+|---|---|---|---|---|---|
+| algorithm-generated | 126 | 0.032 [0.008, 0.071] | 0.048 [0.016, 0.087] | 0.159 [0.095, 0.222] | 0.310 [0.230, 0.389] |
+| *random, same candidates* | 126 | *0.113* | *0.226* | *0.312* | *0.520* |
+| hand-crafted | 58 | 0.017 [0.000, 0.052] | 0.052 [0.000, 0.103] | 0.345 [0.224, 0.466] | 0.397 [0.259, 0.517] |
+| *random, same candidates* | 58 | *0.040* | *0.080* | *0.515* | *0.725* |
+
+### NLI contradiction
+
+| corpus | files | step top-1 | step top-2 | agent top-1 | agent top-2 |
+|---|---|---|---|---|---|
+| algorithm-generated | 126 | 0.063 [0.024, 0.111] | 0.175 [0.111, 0.246] | 0.190 [0.119, 0.262] | 0.389 [0.302, 0.476] |
+| *random, same candidates* | 126 | *0.113* | *0.226* | *0.312* | *0.520* |
+| hand-crafted | 58 | 0.121 [0.034, 0.207] | 0.259 [0.155, 0.379] | 0.534 [0.414, 0.655] | 0.828 [0.724, 0.914] |
+| *random, same candidates* | 58 | *0.040* | *0.080* | *0.515* | *0.725* |
+
+Random baselines are computed on the identical candidate set — step 0 excluded,
+and the 20 algorithm-generated and 3 hand-crafted files whose labelled step is
+one this field cannot select kept in the denominator as misses. Dropping those
+would grade these fields on an easier corpus than P(True), which can select
+step 0.
+
+**Embedding divergence is worse than chance on both corpora** — 0.032 against a
+random 0.113, and 0.017 against 0.040 — on every column including the agent one.
+It is not weakly informative; it is anti-correlated. The labelled mistake tends
+to be *more* on-topic than its neighbours, which is what a wrong answer that
+stays on subject looks like to a cosine distance.
+
+**NLI contradiction is also below chance on algorithm-generated** (0.063 against
+0.113) and above it only on hand-crafted, where top-2 reaches 0.259 against 0.080.
+Its hand-crafted agent figures look strong (0.828 at top-2) but sit below the
+content-free *two busiest agents* baseline of 0.891, so they are not evidence of
+localization either.
+
+**Both trail P(True) on every step cell** (0.262 and 0.164 at top-1). The judge's
+contribution survives the semantic control — which is what these fields were
+built to test, and the answer is cleaner now than when they were broken.
+
+---
+
 ## Reading the tables
 
 **On algorithm-generated logs, P(True) locates the step better than anything
