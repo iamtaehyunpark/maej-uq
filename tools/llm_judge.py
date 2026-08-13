@@ -227,7 +227,7 @@ def run_step_by_step(client, rec, with_gt):
 def run_binary_search(client, rec, with_gt):
     """Algorithm 2, driven by the upper/lower-half question the G.2 prompt asks."""
     gt = GT_LINE.format(ground_truth=rec["ground_truth"]) if with_gt else ""
-    lo, hi, calls = 0, len(rec["steps"]) - 1, 0
+    lo, hi, calls, trace, unparsed = 0, len(rec["steps"]) - 1, 0, [], 0
     while lo < hi:
         mid = (lo + hi) // 2
         p = BINARY_SEARCH.format(
@@ -237,14 +237,22 @@ def run_binary_search(client, rec, with_gt):
             lower_half_range="steps %d to %d" % (lo, mid),
             upper_half_range="steps %d to %d" % (mid + 1, hi),
         )
-        half = parse_half(ask(client, p, max_tokens=8))
+        raw = ask(client, p, max_tokens=8)
+        half = parse_half(raw)
         calls += 1
+        # Recorded per decision: a judge that answers the same direction every
+        # time walks the search to one end of the log regardless of content, and
+        # that is indistinguishable from localisation unless the answers are kept.
+        trace.append(half or raw[:20])
+        if half is None:
+            unparsed += 1
         if half == "upper":
             lo = mid + 1
         else:            # 'lower', and an unparseable answer keeps the earlier half
             hi = mid
     return {"pred_agent": rec["steps"][lo]["agent"], "pred_step": lo,
-            "n_calls": calls, "raw": ""}
+            "n_calls": calls, "n_unparsed_halves": unparsed,
+            "raw": ">".join(trace)}
 
 
 RUNNERS = {"all_at_once": run_all_at_once, "step_by_step": run_step_by_step,
@@ -263,12 +271,27 @@ def cmd_run(argv):
         recs = ([r for r in recs if r["subset"] == "alg"][:limit]
                 + [r for r in recs if r["subset"] == "hc"][:limit])
 
+    # Resume by key rather than blind append. The file is opened in append mode
+    # so an interrupted pass can continue, but appending alone silently doubles
+    # every row if the driver is started twice -- which happened once already.
+    seen = set()
+    if os.path.exists(out_path):
+        for line in open(out_path):
+            if line.strip():
+                d = json.loads(line)
+                seen.add((d.get("judge"), d["method"], d["subset"], d["file_id"]))
+        if seen:
+            sys.stderr.write("resuming: %d rows already present, skipping those\n" % len(seen))
+
     client = make_client()
     t0 = time.time()
-    done = 0
+    done = skipped = 0
     with open(out_path, "a") as fh:
         for method in methods:
             for rec in recs:
+                if (MODEL, method, rec["subset"], rec["file_id"]) in seen:
+                    skipped += 1
+                    continue
                 try:
                     out = RUNNERS[method](client, rec, with_gt)
                 except Exception as e:                      # noqa: BLE001
@@ -284,7 +307,8 @@ def cmd_run(argv):
                 if done % 20 == 0:
                     sys.stderr.write("  %s: %d done, %.0fs\n" % (method, done, time.time() - t0))
                     sys.stderr.flush()
-    sys.stderr.write("wrote %d rows to %s\n" % (done, out_path))
+    sys.stderr.write("wrote %d rows (%d already present) to %s\n"
+                     % (done, skipped, out_path))
     return 0
 
 
