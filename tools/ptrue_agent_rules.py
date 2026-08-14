@@ -1,3 +1,4 @@
+import re
 """Which way of aggregating P(True) per agent names the faulty agent best?
 
 `agent_first` selects the agent whose *best* step is still worst (minimax), then
@@ -19,9 +20,22 @@ def boot(v, n=2000, seed=0):
 def fmt(v):
     lo, hi = boot(v); return "%.3f [%.3f,%.3f]" % (st.fmean(v), lo, hi)
 
-def amatch(a, b):
-    a = str(a).strip().lower(); b = str(b).strip().lower()
-    return bool(a and b and (a in b or b in a))
+def _speaker(role):
+    """The actual speaker of a step.
+
+    Hand-crafted roles encode more than identity: "Orchestrator (thought)",
+    "Orchestrator (termination condition)", "Orchestrator (-> WebSurfer)". The
+    last form names a delegation TARGET, so a plain substring test credits a
+    hit whenever the Orchestrator delegates to the faulty agent -- the speaker
+    is the Orchestrator. That inflated hand-crafted agent accuracy by 4 of 58
+    trajectories (0.672 vs the correct 0.603).
+    """
+    return re.sub(r"\s*\(.*?\)\s*", "", str(role or "")).strip().lower()
+
+
+def amatch(gold, picked):
+    g, p = str(gold or "").strip().lower(), _speaker(picked)
+    return bool(g and p and (g in p or p in g))
 
 SELECTORS = {
     "worst single step (min)":      lambda ps: min(ps),

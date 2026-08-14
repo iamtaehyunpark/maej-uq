@@ -1,3 +1,4 @@
+import re
 """Emit the top-1 and top-2 tables, P(True) against content-free baselines."""
 import json, sys, statistics as st, random
 
@@ -24,9 +25,22 @@ def load(path):
         out[k]=sorted(sc,key=lambda x:x["step_idx"])
     return out
 
-def amatch(a,b):
-    a=str(a).strip().lower(); b=str(b).strip().lower()
-    return bool(a and b and (a in b or b in a))
+def _speaker(role):
+    """The actual speaker of a step.
+
+    Hand-crafted roles encode more than identity: "Orchestrator (thought)",
+    "Orchestrator (termination condition)", "Orchestrator (-> WebSurfer)". The
+    last form names a delegation TARGET, so a plain substring test credits a
+    hit whenever the Orchestrator delegates to the faulty agent -- the speaker
+    is the Orchestrator. That inflated hand-crafted agent accuracy by 4 of 58
+    trajectories (0.672 vs the correct 0.603).
+    """
+    return re.sub(r"\s*\(.*?\)\s*", "", str(role or "")).strip().lower()
+
+
+def amatch(gold, picked):
+    g, p = str(gold or "").strip().lower(), _speaker(picked)
+    return bool(g and p and (g in p or p in g))
 
 def hits(files, subset, pick, k):
     """pick(steps,k) -> list of chosen step dicts"""

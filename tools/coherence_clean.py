@@ -28,6 +28,7 @@ Usage:
 
 import json
 import random
+import re
 import statistics as st
 import sys
 import time
@@ -177,9 +178,22 @@ def fmt(v):
     return "%.3f [%.3f,%.3f]" % (st.fmean(v), lo, hi)
 
 
-def amatch(a, b):
-    a, b = str(a).strip().lower(), str(b).strip().lower()
-    return bool(a and b and (a in b or b in a))
+def _speaker(role):
+    """The actual speaker of a step.
+
+    Hand-crafted roles encode more than identity: "Orchestrator (thought)",
+    "Orchestrator (termination condition)", "Orchestrator (-> WebSurfer)". The
+    last form names a delegation TARGET, so a plain substring test credits a
+    hit whenever the Orchestrator delegates to the faulty agent -- the speaker
+    is the Orchestrator. That inflated hand-crafted agent accuracy by 4 of 58
+    trajectories (0.672 vs the correct 0.603).
+    """
+    return re.sub(r"\s*\(.*?\)\s*", "", str(role or "")).strip().lower()
+
+
+def amatch(gold, picked):
+    g, p = str(gold or "").strip().lower(), _speaker(picked)
+    return bool(g and p and (g in p or p in g))
 
 
 def cmd_report(argv):
