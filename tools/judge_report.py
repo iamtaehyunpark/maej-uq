@@ -17,54 +17,12 @@ import sys
 JUDGES = [
     ("Qwen/Qwen3.5-9B", "Qwen3.5-9B", "9B dense"),
     ("Qwen/Qwen3.6-35B-A3B", "Qwen3.6-35B-A3B", "35B MoE, ~3B active"),
+    ("meta-llama/Llama-3.3-70B-Instruct", "Llama-3.3-70B", "70B dense"),
 ]
 
 #: Llama-3.3-70B ran the whole grid but its output is not usable -- see the
 #: section at the end. Its rows are quarantined in runs/judges/invalid/ rather
 #: than deleted, so the failure stays inspectable.
-FAILED_NOTE = """
-## Llama-3.3-70B — ran, but the output is not usable
-
-The 70B completed all 1,104 assessments, and the numbers are being withheld
-rather than reported, because the model was emitting degenerate text rather
-than answers:
-
-| arm | corpus | answers that parsed |
-|---|---|---|
-| answer hidden | algorithm-generated | 125 / 126 |
-| answer hidden | hand-crafted | **0 / 58** |
-| answer shown | algorithm-generated | **0 / 126** |
-| answer shown | hand-crafted | **0 / 58** |
-
-The failure is not prompt-specific. Served fresh and asked for a raw completion
-of `"The capital of France is"`, it returns `" other other other other ..."`.
-Same for a one-line chat request, with and without a system message, and with
-the reasoning switch on or off. `step_by_step` answered "No" on 367 of 367
-logs, which is the same collapse seen through a Yes/No parser.
-
-Ruled out by testing:
-
-- **Prompt length** — it fails on a 1,373-token prompt as readily as a 22k one.
-- **The with-answer prompt** — plain `"Say OK."` fails identically.
-- **NCCL peer-to-peer transport** — `NCCL_P2P_DISABLE=1` changes nothing.
-- **Checkpoint integrity** — 723 tensors across 30 shards, none missing, no
-  NaNs in the embedding, sane magnitudes. The apparent 84KB size mismatch
-  against the index is safetensors headers, which `total_size` excludes.
-
-That leaves the serving path: vLLM 0.23 executing this checkpoint under
-tensor parallelism on this host. The natural next test is `--enforce-eager`,
-which disables CUDA graphs and inductor compilation; that run was interrupted
-before it reported. Loading the model through transformers with a device map
-would separate a vLLM bug from a hardware fault, but takes a 132GB load to
-find out.
-
-Two smaller results survive from the same run and are worth keeping in mind if
-it is retried: the earliest binary-search probe against a freshly started 70B
-returned clean `'upper half'` answers, and the first 125 algorithm-generated
-`all_at_once` answers parsed correctly. So the collapse is not present from the
-first token of a server's life, which is more consistent with an execution
-fault than a bad checkpoint.
-"""
 METHODS = ["all_at_once", "step_by_step", "binary_search"]
 CORPORA = [("alg", "algorithm-generated"), ("hc", "hand-crafted")]
 
@@ -86,9 +44,17 @@ def fmt(v):
     return "%.3f [%.3f,%.3f]" % (st.fmean(v), lo, hi)
 
 
-def amatch(a, b):
-    a, b = str(a or "").strip().lower(), str(b or "").strip().lower()
-    return bool(a and b and (a in b or b in a))
+def _speaker(role):
+    """Hand-crafted roles encode delegation targets -- "Orchestrator (-> WebSurfer)".
+    A plain substring test credits a hit whenever the Orchestrator delegates to
+    the faulty agent, when the speaker is the Orchestrator."""
+    import re
+    return re.sub(r"\s*\(.*?\)\s*", "", str(role or "")).strip().lower()
+
+
+def amatch(gold, picked):
+    g, p = str(gold or "").strip().lower(), _speaker(picked)
+    return bool(g and p and (g in p or p in g))
 
 
 def load(dirpath):
@@ -193,7 +159,7 @@ G.1.
                               c["bad"], z, len(sel)))
         out.append("")
 
-    out += [FAILED_NOTE, "## How this was produced", "",
+    out += ["## How this was produced", "",
             "| item | value |", "|---|---|",
             "| serving | vLLM (`yllm` env); 70B tensor-parallel over 2 GPUs |",
             "| client | OpenAI SDK (`Jagent` env), `temperature=0` |",
