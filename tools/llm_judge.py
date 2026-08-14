@@ -39,6 +39,7 @@ BASE_URL = os.environ.get("JUDGE_BASE_URL", "http://localhost:8000/v1")
 STEP_CHARS = 1500        # per-entry cap when rendering a log
 LOG_CHARS = 90000        # whole-log cap for all_at_once / binary_search
 METHODS = ("all_at_once", "step_by_step", "binary_search")
+STEP_WIDTH = int(os.environ.get("STEP_WIDTH", "8"))   # parallel window for step_by_step
 
 # --- prompts, verbatim from Appendix G --------------------------------------
 
@@ -208,20 +209,38 @@ def run_all_at_once(client, rec, with_gt):
     return {"pred_agent": agent, "pred_step": step, "n_calls": 1, "raw": text[:600]}
 
 
-def run_step_by_step(client, rec, with_gt):
-    """Algorithm 1: walk forward, stop at the first step the judge calls an error."""
+def run_step_by_step(client, rec, with_gt, width=STEP_WIDTH):
+    """Algorithm 1: the first step the judge calls an error.
+
+    Evaluated in parallel windows rather than one call at a time. The answer is
+    identical -- the lowest-indexed step flagged Yes -- because within a window
+    every candidate is judged on its own prefix and the smallest hit wins, and
+    windows are processed in order. Only the cost changes: more calls issued,
+    but the server batches them instead of sitting idle behind one request. On a
+    130-step log against a 70B that is the difference between minutes and an
+    hour.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
     gt = GT_LINE.format(ground_truth=rec["ground_truth"]) if with_gt else ""
     n = len(rec["steps"])
-    for i in range(n):
-        p = STEP_BY_STEP.format(problem=rec["problem"], gt_line=gt,
-                                failure_log=render(rec["steps"], 0, i))
-        text = ask(client, p)
-        if parse_yes_no(text):
-            return {"pred_agent": rec["steps"][i]["agent"], "pred_step": i,
-                    "n_calls": i + 1, "raw": text[:300]}
+    calls = 0
+    for base in range(0, n, width):
+        idx = list(range(base, min(base + width, n)))
+        prompts = [STEP_BY_STEP.format(problem=rec["problem"], gt_line=gt,
+                                       failure_log=render(rec["steps"], 0, i))
+                   for i in idx]
+        with ThreadPoolExecutor(max_workers=len(idx)) as ex:
+            texts = list(ex.map(lambda q: ask(client, q), prompts))
+        calls += len(idx)
+        for i, text in zip(idx, texts):
+            if parse_yes_no(text):
+                return {"pred_agent": rec["steps"][i]["agent"], "pred_step": i,
+                        "n_calls": calls, "raw": text[:300]}
     # "No error found" -- the paper leaves this unspecified; scored as a miss
     # rather than silently defaulting to a step.
-    return {"pred_agent": None, "pred_step": None, "n_calls": n, "raw": "no error found"}
+    return {"pred_agent": None, "pred_step": None, "n_calls": calls,
+            "raw": "no error found"}
 
 
 def run_binary_search(client, rec, with_gt):
